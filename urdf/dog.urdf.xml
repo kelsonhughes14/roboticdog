@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<robot name="dog">
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="0.406 0.235 0.115"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <link name="front_right_upper">
+    <visual>
+      <geometry>
+        <box size="0.05 0.03 0.215"/>
+	<origin rpy="0 0 0" xyz="0.178 0 -0.1175"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="front_right_bu" type="fixed">
+    <parent link="base_link"/>
+    <child link="front_right_upper"/>
+    <origin xyz="0.203 0 -0.1175"/>
+  </joint>
+
+  <link name="front_right_lower">
+    <visual>
+      <geometry>
+        <box size="0.03 0.02 0.215"/>
+	<origin rpy="0 0 0" xyz="0.178 -0.215 -0.1175"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="front_right_ul" type="fixed">
+    <parent link="front_right_upper"/>
+    <child link="front_right_lower"/>
+    <origin xyz="0.203 -0.215 -0.1175"/>
+  </joint>
+
+  <link name="front_right_foot">
+    <visual>
+      <geometry>
+        <sphere radius="0.05"/>
+	<origin rpy="0 0 0" xyz="0.178 -0.430 -0.1175"/>
+      </geometry>
+    </visual>
+  </link>
+
+  <joint name="front_right_lf" type="fixed">
+    <parent link="front_right_lower"/>
+    <child link="front_right_foot"/>
+    <origin xyz="0.203 -0.430 -0.1175"/>
+  </joint>
+
+</robot>
