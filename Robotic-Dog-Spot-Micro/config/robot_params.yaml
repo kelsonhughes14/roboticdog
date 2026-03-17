@@ -1,0 +1,17 @@
+# robot_params.yaml
+# ─────────────────────────────────────────────
+# Runtime-tunable parameters for all Spot Micro nodes.
+# These override the defaults in robot_config.py.
+# ─────────────────────────────────────────────
+
+gait_node:
+  ros__parameters:
+    control_rate_hz: 50
+
+state_manager:
+  ros__parameters:
+    joystick_scale: 0.3
+    turn_scale: 0.5
+    turbo_multiplier: 2.0
+    joystick_deadzone: 0.10
+    fall_detection_angle: 45.0   # degrees — triggers E-stop

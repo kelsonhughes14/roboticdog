@@ -1,0 +1,30 @@
+# xbox_controller.yaml
+# ─────────────────────────────────────────────
+# Configuration for the joy_node and teleop_twist_joy
+# used with an Xbox One controller on Spot Micro.
+# ─────────────────────────────────────────────
+
+joy_node:
+  ros__parameters:
+    device_id: 0                              # /dev/input/js0 — works for USB and Bluetooth (requires xpadneo for BT)
+    deadzone: 0.10
+    autorepeat_rate: 20.0  # Hz - keeps topic alive even without input
+    coalesce_interval_ms: 1
+
+teleop_node:
+  ros__parameters:
+    # Left stick Y  → forward/back
+    # Left stick X  → strafe
+    # Right stick X → yaw (turn)
+    axis_linear:
+      x: 1
+      y: 0
+    axis_angular:
+      yaw: 3
+    scale_linear:
+      x: 0.3
+      y: 0.3
+    scale_angular:
+      yaw: 0.5
+    enable_button: 4        # LB must be held to move
+    enable_turbo_button: 5  # RB for turbo speed
