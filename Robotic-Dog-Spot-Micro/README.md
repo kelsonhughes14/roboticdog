@@ -1,4 +1,4 @@
-# spotmicro_control
+# spotmicro
 
 Full ROS2 Humble control package for the **Spot Micro** quadruped robot.
 
@@ -18,8 +18,8 @@ Full ROS2 Humble control package for the **Spot Micro** quadruped robot.
 ## Package Structure
 
 ```
-spotmicro_control/
-├── spotmicro_control/
+spotmicro/
+├── spotmicro/
 │   ├── robot_config.py      # All physical constants and pin mappings
 │   ├── kinematics.py        # Inverse kinematics solver
 │   ├── gait_generator.py    # Crawl and trot gait trajectories
@@ -111,7 +111,7 @@ apt update && apt install -y \
 
 ```bash
 mkdir -p ~/ros2_ws/src
-cp -r spotmicro_control ~/ros2_ws/src/
+cp -r spotmicro ~/ros2_ws/src/
 cd ~/ros2_ws
 colcon build
 source install/setup.bash
@@ -124,19 +124,19 @@ source install/setup.bash
 ### Full system
 
 ```bash
-ros2 launch spotmicro_control spotmicro_launch.py
+ros2 launch spotmicro spotmicro_launch.py
 ```
 
 ### Without hardware (simulation / dry run)
 
 ```bash
-ros2 launch spotmicro_control spotmicro_launch.py dry_run:=true
+ros2 launch spotmicro spotmicro_launch.py dry_run:=true
 ```
 
 ### Servo calibration only
 
 ```bash
-ros2 launch spotmicro_control calibration_launch.py
+ros2 launch spotmicro calibration_launch.py
 # Then from another terminal:
 ros2 topic pub --once /servo_angles std_msgs/msg/Float32MultiArray \
   "data: [90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0,90.0]"
@@ -166,7 +166,7 @@ ros2 topic pub --once /servo_angles std_msgs/msg/Float32MultiArray \
 
 After building, tune the `SERVO_OFFSETS` in `robot_config.py`.
 
-1. Launch calibration: `ros2 launch spotmicro_control calibration_launch.py`
+1. Launch calibration: `ros2 launch spotmicro calibration_launch.py`
 2. Send all servos to 90°
 3. For each servo, adjust its offset until the joint is mechanically neutral
 4. Update `SERVO_OFFSETS` in `robot_config.py`
@@ -178,7 +178,7 @@ After building, tune the `SERVO_OFFSETS` in `robot_config.py`.
 
 ```bash
 cd ~/ros2_ws
-pytest src/spotmicro_control/test/ -v
+pytest src/spotmicro/test/ -v
 ```
 
 ---
