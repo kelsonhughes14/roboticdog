@@ -1,0 +1,457 @@
+<?xml version="1.0"?>
+<!--
+dog.urdf.xacro
+==============
+URDF for the Dog quadruped robot (MIT mini Cheetah-style).
+
+Physical dimensions (from robot_config.py):
+  Body:        430 mm (L) x 150 mm (W) x 100 mm (H)
+  Hip offset:  130 mm  (abduction link)
+  Upper leg:   320 mm  (femur / shoulder-to-knee)
+  Lower leg:   320 mm  (tibia / knee-to-foot)
+
+Joint order matches /joint_angles Float32MultiArray:
+  [FR_hip, FR_sho, FR_kne,
+   FL_hip, FL_sho, FL_kne,
+   RR_hip, RR_sho, RR_kne,
+   RL_hip, RL_sho, RL_kne]
+
+Coordinate convention (ROS standard):
+  x = forward,  y = left,  z = up
+-->
+<robot name="dog" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Parameters
+  ═══════════════════════════════════════════════════════════════ -->
+  <xacro:property name="body_l"     value="0.430"/>
+  <xacro:property name="body_w"     value="0.150"/>
+  <xacro:property name="body_h"     value="0.100"/>
+  <xacro:property name="body_mass"  value="4.0"/>
+
+  <xacro:property name="hip_offset" value="0.130"/>
+  <xacro:property name="upper_len"  value="0.320"/>
+  <xacro:property name="lower_len"  value="0.320"/>
+  <xacro:property name="foot_r"     value="0.030"/>
+
+  <xacro:property name="hip_mass"   value="0.300"/>
+  <xacro:property name="upper_mass" value="0.500"/>
+  <xacro:property name="lower_mass" value="0.300"/>
+  <xacro:property name="foot_mass"  value="0.050"/>
+
+  <!-- Mesh scale factors: mini-Cheetah meshes scaled to this robot's dimensions.
+       body : 1.56×0.76×1.01  (mesh 276×197×99 mm → hip spacing 430×150×100 mm)
+       abad : 2.10 uniform     (abad arm 62 mm → 130 mm)
+       upper: 1.53 uniform     (thigh 209 mm → 320 mm)
+       lower: 1.78 uniform     (shank 180 mm → 320 mm)
+       Adjust these if the meshes look off in RViz. -->
+  <xacro:property name="body_ms"  value="1.56 0.76 1.01"/>
+  <xacro:property name="abad_ms"  value="2.10 2.10 2.10"/>
+  <xacro:property name="upper_ms" value="1.53 1.53 1.53"/>
+  <xacro:property name="lower_ms" value="1.78 1.78 1.78"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Materials
+  ═══════════════════════════════════════════════════════════════ -->
+  <material name="dark_grey">  <color rgba="0.20 0.20 0.20 1.0"/> </material>
+  <material name="light_grey"> <color rgba="0.70 0.70 0.70 1.0"/> </material>
+  <material name="orange">     <color rgba="1.00 0.50 0.00 1.0"/> </material>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Base (torso)
+  ═══════════════════════════════════════════════════════════════ -->
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="${body_mass}"/>
+      <!-- ixx=(m/12)*(w²+h²), iyy=(m/12)*(l²+h²), izz=(m/12)*(l²+w²) -->
+      <inertia ixx="0.0108" ixy="0" ixz="0"
+               iyy="0.0650" iyz="0"
+               izz="0.0691"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="file://$(find dog)/urdf/meshes/body.dae" scale="${body_ms}"/>
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="${body_l} ${body_w} ${body_h}"/></geometry>
+    </collision>
+  </link>
+
+  <!-- IMU frame -->
+  <link name="imu_link"/>
+  <joint name="imu_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="imu_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Hokuyo UTM-30LX 2-D LiDAR (visual only)
+       Front-mounted, tilted 45° nose-down.  60 × 60 × 87 mm box.
+  ═══════════════════════════════════════════════════════════════ -->
+  <link name="lidar_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.370"/>
+      <inertia ixx="3.4e-4" ixy="0" ixz="0"
+               iyy="3.4e-4" iyz="0"
+               izz="2.2e-4"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.060 0.060 0.087"/></geometry>
+      <material name="dark_grey"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry><box size="0.060 0.060 0.087"/></geometry>
+    </collision>
+  </link>
+
+  <!-- x: clears front face (+0.030 beyond body half-length)
+       z: sits on top of body (+0.044 = half of 87 mm above body top)
+       pitch 0 = horizontal scan plane — required for 2D SLAM.
+       Change rpy to "0 -0.7854 0" if you physically tilt the sensor nose-down. -->
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child  link="lidar_link"/>
+    <origin xyz="${body_l/2 + 0.030} 0 ${body_h/2 + 0.044}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Gazebo: Hokuyo UTM-30LX lidar sensor (simulation only)
+       Publishes Ignition LaserScan → bridged to /scan by autonomous_launch.
+       270° FOV (-135° to +135°), 720 samples, 30 m max range.
+  ═══════════════════════════════════════════════════════════════ -->
+  <gazebo reference="lidar_link">
+    <sensor name="hokuyo_lidar" type="lidar">
+      <always_on>1</always_on>
+      <update_rate>10</update_rate>
+      <topic>/scan</topic>
+      <gz_frame_id>lidar_link</gz_frame_id>
+      <lidar>
+        <scan>
+          <horizontal>
+            <samples>360</samples>
+            <resolution>1</resolution>
+            <min_angle>-2.356</min_angle>
+            <max_angle>2.356</max_angle>
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.10</min>
+          <max>30.0</max>
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>
+        </noise>
+      </lidar>
+    </sensor>
+  </gazebo>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Leg macro  (kinematics + links only, no ros2_control here)
+       name       : fr | fl | rr | rl
+       bx, by     : body-frame position of hip joint
+       hip_dir    : +1 for left legs (+y), -1 for right legs (-y)
+       sk_axis    : shoulder/knee joint axis.
+                    All legs use "0 1 0": positive angle = upper leg swings backward,
+                    negative knee angle = lower leg bends forward (inward knee).
+                    Matches NEUTRAL_ANGLES sign convention directly.
+       abad_rpy   : rotation to orient the abad mesh correctly for this leg
+       abad_vx_s  : signed x-offset of abad mesh origin (front legs −, rear legs +)
+  ═══════════════════════════════════════════════════════════════ -->
+  <xacro:macro name="leg" params="name bx by hip_dir sk_axis abad_rpy abad_vx_s">
+
+    <!-- Hip joint: abduction/adduction, axis = +x -->
+    <joint name="${name}_hip_joint" type="revolute">
+      <parent link="base_link"/>
+      <child  link="${name}_hip_link"/>
+      <origin xyz="${bx} ${by} 0" rpy="0 0 0"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-0.785" upper="0.785" effort="18.0" velocity="45.0"/>
+      <dynamics damping="0.1" friction="0.0"/>
+    </joint>
+
+    <link name="${name}_hip_link">
+      <inertial>
+        <origin xyz="0 ${hip_dir * hip_offset * 0.5} 0" rpy="0 0 0"/>
+        <mass value="${hip_mass}"/>
+        <!-- cylinder along y: ixx=izz=(m/12)*(3r²+l²), iyy=(m/2)*r² -->
+        <inertia ixx="4.7e-4" ixy="0" ixz="0"
+                 iyy="9.4e-5" iyz="0"
+                 izz="4.7e-4"/>
+      </inertial>
+      <visual>
+        <origin xyz="${abad_vx_s} 0 0" rpy="${abad_rpy}"/>
+        <geometry>
+          <mesh filename="file://$(find dog)/urdf/meshes/abad.dae" scale="${abad_ms}"/>
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 ${hip_dir * hip_offset * 0.5} 0" rpy="${pi/2} 0 0"/>
+        <geometry><cylinder radius="0.025" length="${hip_offset}"/></geometry>
+      </collision>
+    </link>
+
+    <!-- Shoulder joint: thigh flexion -->
+    <joint name="${name}_shoulder_joint" type="revolute">
+      <parent link="${name}_hip_link"/>
+      <child  link="${name}_upper_leg_link"/>
+      <origin xyz="0 ${hip_dir * hip_offset} 0" rpy="0 0 0"/>
+      <axis xyz="${sk_axis}"/>
+      <limit lower="-2.618" upper="2.618" effort="50.0" velocity="45.0"/>
+      <dynamics damping="0.1" friction="0.0"/>
+    </joint>
+
+    <link name="${name}_upper_leg_link">
+      <inertial>
+        <origin xyz="0 0 ${-upper_len * 0.5}" rpy="0 0 0"/>
+        <mass value="${upper_mass}"/>
+        <!-- cylinder along z: ixx=iyy=(m/12)*(3r²+l²), izz=(m/2)*r² -->
+        <inertia ixx="4.34e-3" ixy="0" ixz="0"
+                 iyy="4.34e-3" iyz="0"
+                 izz="1.56e-4"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 -1.5708 0"/>
+        <geometry>
+          <mesh filename="file://$(find dog)/urdf/meshes/upper_link.dae" scale="${upper_ms}"/>
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${-upper_len * 0.5}" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.025" length="${upper_len}"/></geometry>
+      </collision>
+    </link>
+
+    <!-- Knee joint: shank flexion -->
+    <joint name="${name}_knee_joint" type="revolute">
+      <parent link="${name}_upper_leg_link"/>
+      <child  link="${name}_lower_leg_link"/>
+      <origin xyz="0 0 ${-upper_len}" rpy="0 0 0"/>
+      <axis xyz="${sk_axis}"/>
+      <limit lower="-2.618" effort="50.0" upper="2.618" velocity="45.0"/>
+      <dynamics damping="0.1" friction="0.0"/>
+    </joint>
+
+    <link name="${name}_lower_leg_link">
+      <inertial>
+        <origin xyz="0 0 ${-lower_len * 0.5}" rpy="0 0 0"/>
+        <mass value="${lower_mass}"/>
+        <!-- cylinder along z: ixx=iyy=(m/12)*(3r²+l²), izz=(m/2)*r² -->
+        <inertia ixx="2.58e-3" ixy="0" ixz="0"
+                 iyy="2.58e-3" iyz="0"
+                 izz="3.4e-5"/>
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 3.141592 0"/>
+        <geometry>
+          <mesh filename="file://$(find dog)/urdf/meshes/lower_link.dae" scale="${lower_ms}"/>
+        </geometry>
+      </visual>
+      <collision>
+        <origin xyz="0 0 ${-lower_len * 0.5}" rpy="0 0 0"/>
+        <geometry><cylinder radius="0.018" length="${lower_len}"/></geometry>
+      </collision>
+    </link>
+
+    <!-- Foot sphere (contact) -->
+    <joint name="${name}_foot_joint" type="fixed">
+      <parent link="${name}_lower_leg_link"/>
+      <child  link="${name}_foot_link"/>
+      <origin xyz="0 0 ${-lower_len}" rpy="0 0 0"/>
+    </joint>
+
+    <link name="${name}_foot_link">
+      <inertial>
+        <mass value="${foot_mass}"/>
+        <!-- sphere: ixx=iyy=izz=(2/5)*m*r² -->
+        <inertia ixx="1.8e-5" ixy="0" ixz="0"
+                 iyy="1.8e-5" iyz="0"
+                 izz="1.8e-5"/>
+      </inertial>
+      <visual>
+        <geometry><sphere radius="${foot_r}"/></geometry>
+        <material name="orange"/>
+      </visual>
+      <collision>
+        <geometry><sphere radius="${foot_r}"/></geometry>
+      </collision>
+    </link>
+
+    <!-- Gazebo contact / friction params for this foot -->
+    <gazebo reference="${name}_foot_link">
+      <mu1>1.2</mu1>
+      <mu2>1.2</mu2>
+      <kp>500000.0</kp>
+      <kd>10.0</kd>
+      <minDepth>0.001</minDepth>
+    </gazebo>
+
+  </xacro:macro>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Instantiate legs
+       Neutral standing angles (robot_config.py NEUTRAL_ANGLES):
+         All legs: hip=±0.27, shoulder=+0.57, knee=-1.13 (geometric)
+         controller knee cmd = -0.57 (belt-coupled motor value)
+       (UPPER=320 mm, LOWER=320 mm, STAND_HEIGHT=540 mm)
+  ═══════════════════════════════════════════════════════════════ -->
+  <!-- Inward-facing knees (MIT mini Cheetah style):
+       All legs use "0 1 0": positive shoulder = upper leg backward,
+       negative knee = lower leg forward → knee protrudes inward/backward.
+       This matches the sign convention in NEUTRAL_ANGLES for all four legs.
+       abad_rpy / abad_vx_s orient the abad mesh correctly per leg (from mini_cheetah URDF). -->
+  <xacro:leg name="fr" bx=" 0.215" by="-0.075" hip_dir="-1" sk_axis="0 1 0"
+             abad_rpy="3.141592 0 1.5708"  abad_vx_s="-0.115"/>
+  <xacro:leg name="fl" bx=" 0.215" by=" 0.075" hip_dir=" 1" sk_axis="0 1 0"
+             abad_rpy="0 0 -1.5708"        abad_vx_s="-0.115"/>
+  <xacro:leg name="rr" bx="-0.215" by="-0.075" hip_dir="-1" sk_axis="0 1 0"
+             abad_rpy="0 0 1.5708"         abad_vx_s=" 0.115"/>
+  <xacro:leg name="rl" bx="-0.215" by=" 0.075" hip_dir=" 1" sk_axis="0 1 0"
+             abad_rpy="3.141592 0 -1.5708" abad_vx_s=" 0.115"/>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       ros2_control hardware interface (ign_ros2_control)
+       Joint order MUST match /joint_angles Float32MultiArray index:
+         0  fr_hip    3  fl_hip    6  rr_hip    9  rl_hip
+         1  fr_sho    4  fl_sho    7  rr_sho   10  rl_sho
+         2  fr_kne    5  fl_kne    8  rr_kne   11  rl_kne
+  ═══════════════════════════════════════════════════════════════ -->
+  <ros2_control name="GazeboSimSystem" type="system">
+    <hardware>
+      <plugin>ign_ros2_control/IgnitionSystem</plugin>
+    </hardware>
+
+    <!-- FR  (sk_axis="0 1 0": signs match motor commands directly) -->
+    <joint name="fr_hip_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value"> 0.27</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="fr_shoulder_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value"> 0.57</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="fr_knee_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">-1.13</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <!-- FL  (sk_axis="0 1 0": shoulder/knee signs match motor cmd) -->
+    <joint name="fl_hip_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">-0.27</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="fl_shoulder_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value"> 0.57</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="fl_knee_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">-1.13</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <!-- RR  (sk_axis="0 1 0") -->
+    <joint name="rr_hip_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value"> 0.27</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rr_shoulder_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value"> 0.57</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rr_knee_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">-1.13</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+    <!-- RL  (sk_axis="0 1 0") -->
+    <joint name="rl_hip_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">-0.27</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rl_shoulder_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value"> 0.57</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+    <joint name="rl_knee_joint">
+      <command_interface name="position"/>
+      <state_interface name="position"><param name="initial_value">-1.13</param></state_interface>
+      <state_interface name="velocity"/>
+    </joint>
+
+  </ros2_control>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Gazebo plugins
+  ═══════════════════════════════════════════════════════════════ -->
+
+  <!-- ign_ros2_control: starts controller_manager inside Gazebo -->
+  <gazebo>
+    <plugin filename="ign_ros2_control-system"
+            name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <parameters>$(find dog)/config/ros2_controllers.yaml</parameters>
+      <ros>
+        <namespace>/</namespace>
+      </ros>
+    </plugin>
+  </gazebo>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       Gazebo: ground-truth odometry (simulation only)
+       Publishes to Ignition topic /model/dog/odometry which is bridged
+       to ROS2 /odom (nav_msgs/Odometry) by the autonomous sim bridge.
+       Used by SLAM Toolbox and Nav2 in place of ZED 2 visual odometry.
+  ═══════════════════════════════════════════════════════════════ -->
+  <gazebo>
+    <plugin filename="ignition-gazebo-odometry-publisher-system"
+            name="ignition::gazebo::systems::OdometryPublisher">
+      <odom_frame>odom</odom_frame>
+      <robot_base_frame>base_link</robot_base_frame>
+      <odom_publish_frequency>50</odom_publish_frequency>
+      <dimensions>2</dimensions>
+    </plugin>
+  </gazebo>
+
+  <!-- IMU sensor: publishes sensor_msgs/Imu via ros_gz_bridge to /imu/data -->
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>1</always_on>
+      <update_rate>50</update_rate>
+      <topic>/imu/data</topic>
+      <gz_frame_id>imu_link</gz_frame_id>
+      <imu>
+        <angular_velocity>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>2e-4</stddev></noise></z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></x>
+          <y><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></y>
+          <z><noise type="gaussian"><mean>0.0</mean><stddev>0.017</stddev></noise></z>
+        </linear_acceleration>
+      </imu>
+    </sensor>
+  </gazebo>
+
+</robot>

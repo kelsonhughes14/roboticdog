@@ -1,0 +1,16 @@
+# robot_params.yaml
+# ─────────────────────────────────────────────
+# Runtime-tunable parameters for Dog robot nodes.
+# ─────────────────────────────────────────────
+
+gait_node:
+  ros__parameters:
+    control_rate_hz: 50
+
+state_manager:
+  ros__parameters:
+    joystick_scale: 0.5       # max linear velocity (m/s equivalent)
+    turn_scale: 1.0           # max yaw rate
+    turbo_multiplier: 2.0
+    joystick_deadzone: 0.10
+    fall_detection_angle: 45.0   # degrees — triggers E-stop

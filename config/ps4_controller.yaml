@@ -1,0 +1,36 @@
+# ps4_controller.yaml
+# ─────────────────────────────────────────────
+# joy_node configuration for PS4 DualShock 4 controller (USB or Bluetooth).
+#
+# Axes (identical to Xbox):
+#   0: Left stick X    1: Left stick Y
+#   2: L2 analog       3: Right stick X
+#   4: Right stick Y   5: R2 analog
+#
+# Buttons (differ from Xbox at indices 6+):
+#   0: Cross (×)  1: Circle (○)  2: Square (□)  3: Triangle (△)
+#   4: L1         5: R1          6: L2 (digital) 7: R2 (digital)
+#   8: Share      9: Options     10: PS button   11: L3  12: R3  13: Touchpad
+# ─────────────────────────────────────────────
+
+joy_node:
+  ros__parameters:
+    device_id: 0              # /dev/input/js0
+    deadzone: 0.10
+    autorepeat_rate: 20.0     # Hz — keeps topic alive without input
+    coalesce_interval_ms: 1
+
+teleop_node:
+  ros__parameters:
+    axis_linear:
+      x: 1    # Left stick Y  → forward/back
+      y: 0    # Left stick X  → strafe
+    axis_angular:
+      yaw: 3  # Right stick X → turn
+    scale_linear:
+      x: 0.5
+      y: 0.5
+    scale_angular:
+      yaw: 1.0
+    enable_button: 4          # L1 must be held to move
+    enable_turbo_button: 5    # R1 for turbo speed

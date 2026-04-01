@@ -1,0 +1,240 @@
+<?xml version="1.0" ?>
+<!--
+nav_test.sdf
+------------
+Navigation test world for Gazebo Fortress (Ignition Gazebo 6).
+Used by autonomous_launch.py when sim:=true autonomous:=true.
+
+Layout (top-down, 12 m × 12 m enclosed room):
+
+  +-----------------------------+
+  |                             |
+  |    [B2]          [B3]       |
+  |                             |
+  |       +--+                  |
+  |       |W1|    [B1]          |
+  |       +--+                  |
+  |                             |
+  |  [B4]         [B5]          |
+  |                  +------+   |
+  |                  | W2   |   |
+  | * (spawn)        +------+   |
+  +-----------------------------+
+
+  *  = robot spawn point (0, 0)
+  B1-B5 = box obstacles (0.6–0.8 m cubes)
+  W1-W2 = short interior walls (1.2–2.0 m long)
+-->
+<sdf version="1.6">
+  <world name="dog_world">
+
+    <!-- Required system plugins (same as empty.sdf) -->
+    <plugin filename="ignition-gazebo-physics-system"
+            name="ignition::gazebo::systems::Physics"/>
+    <plugin filename="ignition-gazebo-user-commands-system"
+            name="ignition::gazebo::systems::UserCommands"/>
+    <plugin filename="ignition-gazebo-scene-broadcaster-system"
+            name="ignition::gazebo::systems::SceneBroadcaster"/>
+    <plugin filename="ignition-gazebo-contact-system"
+            name="ignition::gazebo::systems::Contact"/>
+    <plugin filename="ignition-gazebo-sensors-system"
+            name="ignition::gazebo::systems::Sensors">
+      <render_engine>ogre</render_engine>
+    </plugin>
+
+    <!-- Physics -->
+    <gravity>0 0 -9.81</gravity>
+    <magnetic_field>6e-06 2.3e-05 -4.2e-05</magnetic_field>
+    <atmosphere type="adiabatic"/>
+
+    <!-- Lighting -->
+    <light type="directional" name="sun">
+      <cast_shadows>true</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <!-- ── Ground plane ─────────────────────────────────────────── -->
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="surface">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>100 100</size>
+            </plane>
+          </geometry>
+          <surface>
+            <friction>
+              <ode><mu>1.0</mu><mu2>1.0</mu2></ode>
+            </friction>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>100 100</size></plane>
+          </geometry>
+          <material>
+            <ambient>0.7 0.7 0.7 1</ambient>
+            <diffuse>0.7 0.7 0.7 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Outer room walls (12 m × 12 m, 0.2 m thick, 1.2 m tall) ── -->
+
+    <model name="wall_north">
+      <static>true</static>
+      <pose>0 6.1 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>12.4 0.2 1.2</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>12.4 0.2 1.2</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_south">
+      <static>true</static>
+      <pose>0 -6.1 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>12.4 0.2 1.2</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>12.4 0.2 1.2</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_east">
+      <static>true</static>
+      <pose>6.1 0 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 12.0 1.2</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.2 12.0 1.2</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <model name="wall_west">
+      <static>true</static>
+      <pose>-6.1 0 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 12.0 1.2</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.2 12.0 1.2</size></box></geometry>
+          <material><ambient>0.6 0.6 0.6 1</ambient><diffuse>0.6 0.6 0.6 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Interior short walls ──────────────────────────────────── -->
+
+    <!-- W1: vertical stub wall near centre-left, creates a chokepoint -->
+    <model name="interior_wall_1">
+      <static>true</static>
+      <pose>-1.5 1.5 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.2 2.0 1.2</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.2 2.0 1.2</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient><diffuse>0.5 0.4 0.3 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- W2: horizontal stub wall near south-east, forces a detour -->
+    <model name="interior_wall_2">
+      <static>true</static>
+      <pose>3.5 -3.5 0.6 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>2.5 0.2 1.2</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>2.5 0.2 1.2</size></box></geometry>
+          <material><ambient>0.5 0.4 0.3 1</ambient><diffuse>0.5 0.4 0.3 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- ── Box obstacles ─────────────────────────────────────────── -->
+
+    <!-- B1: orange box, centre-right -->
+    <model name="box1">
+      <static>true</static>
+      <pose>2.0 1.0 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.8 0.8 0.8</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.8 0.8 0.8</size></box></geometry>
+          <material><ambient>0.9 0.4 0.1 1</ambient><diffuse>0.9 0.4 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- B2: blue box, north-west -->
+    <model name="box2">
+      <static>true</static>
+      <pose>-3.5 3.5 0.4 0 0 0.5236</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>1.0 0.5 0.8</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>1.0 0.5 0.8</size></box></geometry>
+          <material><ambient>0.1 0.4 0.9 1</ambient><diffuse>0.1 0.4 0.9 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- B3: green box, north-east -->
+    <model name="box3">
+      <static>true</static>
+      <pose>3.0 3.5 0.35 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.7 0.7 0.7</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.7 0.7 0.7</size></box></geometry>
+          <material><ambient>0.2 0.8 0.2 1</ambient><diffuse>0.2 0.8 0.2 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- B4: yellow box, south-west -->
+    <model name="box4">
+      <static>true</static>
+      <pose>-4.0 -2.5 0.35 0 0 0.3927</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.6 0.6 0.7</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.6 0.6 0.7</size></box></geometry>
+          <material><ambient>0.9 0.8 0.1 1</ambient><diffuse>0.9 0.8 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+    <!-- B5: red box, south-east -->
+    <model name="box5">
+      <static>true</static>
+      <pose>3.5 -1.5 0.4 0 0 0</pose>
+      <link name="link">
+        <collision name="col"><geometry><box><size>0.8 0.4 0.8</size></box></geometry></collision>
+        <visual name="vis">
+          <geometry><box><size>0.8 0.4 0.8</size></box></geometry>
+          <material><ambient>0.9 0.1 0.1 1</ambient><diffuse>0.9 0.1 0.1 1</diffuse></material>
+        </visual>
+      </link>
+    </model>
+
+  </world>
+</sdf>

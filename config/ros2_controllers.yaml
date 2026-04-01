@@ -1,0 +1,48 @@
+# ros2_controllers.yaml
+# ----------------------
+# Controller configuration for Gazebo Fortress simulation via ign_ros2_control.
+#
+# joint_state_broadcaster  — publishes sensor_msgs/JointState to /joint_states
+# joint_group_position_controller — receives Float64MultiArray commands
+#
+# Joint order in joint_group_position_controller MUST match /joint_angles:
+#   [fr_hip, fr_shoulder, fr_knee,
+#    fl_hip, fl_shoulder, fl_knee,
+#    rr_hip, rr_shoulder, rr_knee,
+#    rl_hip, rl_shoulder, rl_knee]
+
+controller_manager:
+  ros__parameters:
+    update_rate: 50  # Hz — matches CONTROL_RATE_HZ in gait_node.py
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    joint_group_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+joint_state_broadcaster:
+  ros__parameters: {}
+
+joint_group_position_controller:
+  ros__parameters:
+    joints:
+      - fr_hip_joint
+      - fr_shoulder_joint
+      - fr_knee_joint
+      - fl_hip_joint
+      - fl_shoulder_joint
+      - fl_knee_joint
+      - rr_hip_joint
+      - rr_shoulder_joint
+      - rr_knee_joint
+      - rl_hip_joint
+      - rl_shoulder_joint
+      - rl_knee_joint
+    command_interfaces:
+      - position
+    state_interfaces:
+      - position
+      - velocity
+    open_loop_control: true
+    allow_nonzero_velocity_at_trajectory_end: true

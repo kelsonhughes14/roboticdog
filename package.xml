@@ -1,0 +1,58 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>dog</name>
+  <version>1.0.0</version>
+  <description>
+    Full control package for a large-scale quadruped robot.
+    Drives CubeMars AK45-36 brushless actuators via CAN bus (MIT mini cheetah
+    protocol) through a Teensy 4.1 running micro-ROS.
+    Includes inverse kinematics, gait generation, Xbox controller teleoperation,
+    and CAN motor calibration tools.
+    Hardware: Jetson Orin Nano + Teensy 4.1 + mjbots power_dist r4.5b.
+  </description>
+
+  <maintainer email="user@example.com">Dog Robot User</maintainer>
+  <license>MIT</license>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>joy</depend>
+  <depend>teleop_twist_joy</depend>
+
+  <!-- Autonomous navigation dependencies -->
+  <depend>nav2_bringup</depend>
+  <depend>nav2_bt_navigator</depend>
+  <depend>nav2_controller</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_navfn_planner</depend>
+  <depend>nav2_regulated_pure_pursuit_controller</depend>
+  <depend>nav2_behaviors</depend>
+  <depend>nav2_waypoint_follower</depend>
+  <depend>nav2_velocity_smoother</depend>
+  <depend>nav2_rviz_plugins</depend>
+  <depend>slam_toolbox</depend>
+  <depend>tf2_ros</depend>
+  <depend>nav_msgs</depend>
+  <depend>rviz2</depend>
+
+  <!-- Simulation dependencies (Gazebo Fortress / Ignition) -->
+  <depend>robot_state_publisher</depend>
+  <depend>xacro</depend>
+  <depend>ros_gz_sim</depend>
+  <depend>ros_gz_bridge</depend>
+  <depend>ign_ros2_control</depend>
+  <depend>position_controllers</depend>
+  <depend>joint_state_broadcaster</depend>
+
+  <test_depend>ament_copyright</test_depend>
+  <test_depend>ament_flake8</test_depend>
+  <test_depend>ament_pep257</test_depend>
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

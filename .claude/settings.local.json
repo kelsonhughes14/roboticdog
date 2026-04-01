@@ -1,0 +1,40 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//home/robotic-dog/ros2_ws/**)",
+      "Bash(colcon build:*)",
+      "Bash(find /home/robotic-dog/ros2_ws/src/dog -name .gitignore -o -name README*)",
+      "Bash(ls -lath /home/robotic-dog/ros2_ws/src/dog/dog/*.py)",
+      "Bash(find /home/robotic-dog/ros2_ws/src/dog -type f \\\\\\(-name *.cpp -o -name platformio.ini \\\\\\))",
+      "Bash(xargs ls:*)",
+      "Bash(source /opt/ros/humble/setup.bash)",
+      "Bash(source /home/robotic-dog/ros2_ws/install/setup.bash)",
+      "Bash(ros2 node:*)",
+      "Bash(ros2 topic:*)",
+      "Bash(source /home/robotic-dog/ros2_ws/install/setup.bash echo '=== micro_ros_agent version ===' ros2 run micro_ros_agent micro_ros_agent --version)",
+      "Bash(echo 'no --version flag' echo echo '=== Check for super client config ===' find /home/robotic-dog/ros2_ws -name *.xml)",
+      "Bash(echo 'no super_client xml found' find /opt/ros/humble -name *.xml)",
+      "Bash(find /home/robotic-dog/ros2_ws/src -name *.xml)",
+      "Read(//home/robotic-dog/ros2_ws/src/dog/**)",
+      "Bash(ign gazebo:*)",
+      "Bash(echo $IGN_GAZEBO_SYSTEM_PLUGIN_PATH)",
+      "Bash(echo $GZ_SIM_SYSTEM_PLUGIN_PATH)",
+      "Bash(xargs cat:*)",
+      "Read(//usr/lib/**)",
+      "Bash(python3 -c \"from ros_gz_sim.launch import GazeboRosPaths; m, p = GazeboRosPaths.get_paths\\(\\); print\\(''''plugins:'''', p[:200]\\)\")",
+      "Bash(python3 -c 'from gz_ros2_control import GazeboRosPaths')",
+      "Bash(find /opt/ros/humble -name gazebo_ros_paths*)",
+      "Read(//usr/**)",
+      "Read(//opt/**)",
+      "Bash(ldd /opt/ros/humble/lib/libign_ros2_control-system.so)",
+      "Bash(echo $LD_LIBRARY_PATH)",
+      "Bash(python3 -c \":*)",
+      "Read(//etc/**)",
+      "Read(//home/**)",
+      "Bash(find /home/robotic-dog/ros2_ws/src/dog -name *.msg -o -name *.srv)",
+      "Bash(find /opt/ros/humble -path */ign_ros2_control* -name *.sdf -o -path */ign_ros2_control* -name *.urdf)",
+      "Bash(find /opt/ros/humble/share/gz_ros2_control*)",
+      "Bash(ign plugin:*)"
+    ]
+  }
+}
