@@ -102,14 +102,15 @@ def solve_leg_ik(foot_x: float, foot_y: float, foot_z: float,
     return hip_angle, shoulder_angle, knee_angle
 
 
-def ik_to_joint_angles(hip_ik: float, shoulder_ik: float, knee_ik: float,
-                        leg_index: int) -> tuple[float, float, float]:
+def ik_to_joint_angles(shoulder_ik: float, knee_ik: float,
+                        leg_index: int) -> tuple[float, float]:
     """
     Convert raw IK angles (degrees) to motor position commands (radians).
+    Hip is omitted — physically replaced with a static dummy (8DOF).
 
     direction * ik_angle_rad + offset_rad = motor_cmd_rad
     A motor zeroed at mechanical zero receives 0.0 rad when the leg is
-    at IK angle 0° (hip extended, shoulder vertical, knee straight).
+    at IK angle 0° (shoulder vertical, knee straight).
 
     Belt-drive knee coupling
     ------------------------
@@ -121,12 +122,12 @@ def ik_to_joint_angles(hip_ik: float, shoulder_ik: float, knee_ik: float,
 
     Parameters
     ----------
-    hip_ik, shoulder_ik, knee_ik : float — IK output angles in degrees.
+    shoulder_ik, knee_ik : float — IK output angles in degrees.
     leg_index : int — 0=FR, 1=FL, 2=RR, 3=RL
 
     Returns
     -------
-    (hip_rad, shoulder_rad, knee_rad) — motor position commands in radians.
+    (shoulder_rad, knee_rad) — motor position commands in radians.
     """
     def to_rad(ik_deg: float, leg: int, joint: int) -> float:
         direction = JOINT_DIRECTION.get((leg, joint), 1)
@@ -138,7 +139,6 @@ def ik_to_joint_angles(hip_ik: float, shoulder_ik: float, knee_ik: float,
     knee_coupled = shoulder_ik + knee_ik
 
     return (
-        to_rad(hip_ik,       leg_index, 0),
         to_rad(shoulder_ik,  leg_index, 1),
         to_rad(knee_coupled, leg_index, 2),
     )
@@ -147,7 +147,8 @@ def ik_to_joint_angles(hip_ik: float, shoulder_ik: float, knee_ik: float,
 def compute_all_legs(foot_positions: list[tuple[float, float, float]]
                      ) -> list[float]:
     """
-    Run IK for all four legs and return a flat list of 12 motor angles (radians).
+    Run IK for all four legs and return a flat list of 8 motor angles (radians).
+    Hip is omitted — physically replaced with a static dummy (8DOF).
 
     Parameters
     ----------
@@ -156,25 +157,24 @@ def compute_all_legs(foot_positions: list[tuple[float, float, float]]
 
     Returns
     -------
-    List of 12 floats in radians:
-        [FR_hip, FR_sho, FR_kne,
-         FL_hip, FL_sho, FL_kne,
-         RR_hip, RR_sho, RR_kne,
-         RL_hip, RL_sho, RL_kne]
+    List of 8 floats in radians:
+        [FR_sho, FR_kne,
+         FL_sho, FL_kne,
+         RR_sho, RR_kne,
+         RL_sho, RL_kne]
     """
     sides = [1, -1, 1, -1]   # right=+1, left=-1
     angles = []
 
     for i, (pos, side) in enumerate(zip(foot_positions, sides)):
         try:
-            hip, sho, kne = solve_leg_ik(*pos, leg_side=side)
-            h_rad, s_rad, k_rad = ik_to_joint_angles(hip, sho, kne, i)
+            _, sho, kne = solve_leg_ik(*pos, leg_side=side)
+            s_rad, k_rad = ik_to_joint_angles(sho, kne, i)
         except IKError:
             from dog.robot_config import NEUTRAL_ANGLES
-            h_rad = NEUTRAL_ANGLES[i * 3]
-            s_rad = NEUTRAL_ANGLES[i * 3 + 1]
-            k_rad = NEUTRAL_ANGLES[i * 3 + 2]
+            s_rad = NEUTRAL_ANGLES[i * 2]
+            k_rad = NEUTRAL_ANGLES[i * 2 + 1]
 
-        angles += [h_rad, s_rad, k_rad]
+        angles += [s_rad, k_rad]
 
     return angles

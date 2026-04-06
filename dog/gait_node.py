@@ -11,11 +11,11 @@ Subscribed topics:
 
 Published topics:
   /joint_angles   (std_msgs/Float32MultiArray)
-    12 motor position commands in RADIANS.
-    Order: FR_hip, FR_sho, FR_kne,
-           FL_hip, FL_sho, FL_kne,
-           RR_hip, RR_sho, RR_kne,
-           RL_hip, RL_sho, RL_kne
+    8 motor position commands in RADIANS. Hip motors removed (8DOF).
+    Order: FR_sho, FR_kne,
+           FL_sho, FL_kne,
+           RR_sho, RR_kne,
+           RL_sho, RL_kne
 """
 
 import rclpy
@@ -125,9 +125,10 @@ class GaitNode(Node):
 
     # ────────────────────────────────────────────────────────────────
     def _control_loop(self):
-        if self.robot_state in (RobotState.SITTING, RobotState.ESTOP,
-                                RobotState.IDLE, RobotState.RIGHTING,
-                                RobotState.JUMPING, RobotState.BACKFLIP):
+        if self.robot_state in (RobotState.POSITIONING, RobotState.SITTING,
+                                RobotState.ESTOP, RobotState.IDLE,
+                                RobotState.RIGHTING, RobotState.JUMPING,
+                                RobotState.BACKFLIP):
             return
 
         if self.robot_state == RobotState.STANDING:
@@ -141,6 +142,9 @@ class GaitNode(Node):
             vx=self.vx, vy=self.vy, yaw=self.yaw,
             body_roll=self.roll, body_pitch=self.pitch,
         )
+
+        # Hip is static (8DOF): zero lateral offset so IK geometry is correct
+        foot_positions = [(x, 0.0, z) for x, _, z in foot_positions]
 
         try:
             angles = compute_all_legs(foot_positions)

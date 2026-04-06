@@ -8,18 +8,19 @@
  * Hardware wiring:
  * ─────────────────────────────────────────────────────────────────────────────
  *   CAN1  TX=22, RX=23  →  SN65HVD230 transceiver  →  Front legs (FR + FL)
- *   CAN2  TX=1,  RX=0   →  SN65HVD230 transceiver  →  Rear  legs (RR + RL)
+ *   CAN3  TX=31, RX=30  →  SN65HVD230 transceiver  →  Rear  legs (RR + RL)
  *
  *   Motor IDs (set via CubeMars R-Link software):
- *     FR hip=111 FR sho=112 FR kne=113
- *     FL hip=114 FL sho=115 FL kne=116
- *     RR hip=120 RR sho=121 RR kne=122
- *     RL hip=117 RL sho=118 RL kne=119
+ *     FR sho=0x79(121) FR kne=0x7A(122)  — CAN1
+ *     FL sho=0x75(117) FL kne=0x78(120)  — CAN1
+ *     RR sho=0x73(115) RR kne=0x74(116)  — CAN3
+ *     RL sho=0x76(118) RL kne=0x77(119)  — CAN3
+ *   (Hip motors removed — static 3D-printed dummy, 8DOF)
  *
  *   Termination: 120Ω between CANH and CANL at both ends of each bus.
  *
- *   BNO085 IMU    →  Wire1  (SDA=17, SCL=16)  I2C address 0x4A
- *   SAM-M10Q GPS  →  Serial2 (RX=7,  TX=8)   9600 baud NMEA
+ *   BNO085 IMU    →  Wire   (SDA=18, SCL=19)  I2C address 0x4A
+ *   SAM-M10Q GPS  →  Serial1 (RX=0,  TX=1)   9600 baud NMEA
  *   micro-ROS     →  USB Serial (native Teensy USB)
  *
  * Power:
@@ -29,10 +30,9 @@
  * ROS topics
  * ─────────────────────────────────────────────────────────────────────────────
  * Subscribed:
- *   /joint_angles    (std_msgs/Float32MultiArray, 12 floats)
- *     Motor position commands in RADIANS.
- *     Order: FR_hip, FR_sho, FR_kne, FL_hip, FL_sho, FL_kne,
- *            RR_hip, RR_sho, RR_kne, RL_hip, RL_sho, RL_kne
+ *   /joint_angles    (std_msgs/Float32MultiArray, 8 floats)
+ *     Motor position commands in RADIANS. Hip motors removed (8DOF).
+ *     Order: FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne
  *     Sent with g_kp / g_kd (runtime gains); vel_ff=0, t_ff=0.
  *
  *   /joint_gains     (std_msgs/Float32MultiArray, 2 floats)
@@ -51,7 +51,7 @@
  *   /imu/euler       (geometry_msgs/Vector3)       — 50 Hz (roll/pitch/yaw deg)
  *   /fix             (sensor_msgs/NavSatFix)        — 1 Hz
  *   /joint_states    (std_msgs/Float32MultiArray)  — updated on motor reply
- *     36 floats: position[12] (rad), velocity[12] (rad/s), current[12] (A)
+ *     32 floats: position[8] (rad), velocity[8] (rad/s), current[8] (A), temp[8] (°C)
  *
  * CubeMars AK45-36 MIT mini-cheetah CAN protocol
  * ─────────────────────────────────────────────────────────────────────────────
@@ -109,16 +109,15 @@
 
 #define CAN_BAUD   1000000UL   // 1 Mbps — AK45-36 default
 
-// Motor ID table: index = flat motor index (0–11), value = CAN motor ID
-// Order: FR_hip, FR_sho, FR_kne, FL_hip, FL_sho, FL_kne,
-//        RR_hip, RR_sho, RR_kne, RL_hip, RL_sho, RL_kne
-static const uint8_t MOTOR_ID[12] = { 111, 112, 113, 114, 115, 116, 120, 121, 122, 117, 118, 119 };
+// Motor ID table: index = flat motor index (0–7), value = CAN motor ID
+// Hip motors removed (fried) — replaced with static dummy. 8DOF only.
+// Order: FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne
+static const uint8_t MOTOR_ID[8] = { 0x79, 0x7A, 0x75, 0x78, 0x73, 0x74, 0x76, 0x77 };
+//                                    FR_sho FR_kne FL_sho FL_kne RR_sho RR_kne RL_sho RL_kne
 
-// CAN bus assignment per motor index (1 = CAN1 front, 2 = CAN2 rear)
-// NOTE: During single-motor testing motor 122 is wired to the CAN1 transceiver.
-//       Restore to { 1,1,1,1,1,1, 2,2,2,2,2,2 } when all 12 motors are wired.
-static const uint8_t MOTOR_BUS[12] = { 1, 1, 1, 1, 1, 1,   // FR + FL → CAN1
-                                        2, 2, 2, 2, 2, 2 }; // RR + RL → CAN2
+// CAN bus assignment per motor index (1 = CAN1 front, 3 = CAN3 rear)
+static const uint8_t MOTOR_BUS[8] = { 1, 1, 1, 1,   // FR + FL → CAN1
+                                       3, 3, 3, 3 }; // RR + RL → CAN3
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ROS DOMAIN ID
@@ -151,49 +150,23 @@ static float g_kd = DEFAULT_KD;
 #define JOINT_MAX    2.618f   //  150°
 
 // ─────────────────────────────────────────────────────────────────────────────
-// HOMING SWEEP CONFIGURATION
+// MOTOR SAFETY LIMITS
 // ─────────────────────────────────────────────────────────────────────────────
-// On every agent connection the firmware drives each joint slowly toward its
-// mechanical end-stop, detects the stall, backs off to the sitting position,
-// then calls set-zero so that position 0 = sitting for all subsequent MIT cmds.
+// If any motor exceeds TEMP_CUTOFF_C or sustains torque above TORQUE_CUTOFF_NM
+// for STALL_TICKS consecutive feedback cycles, all motors are immediately exited
+// from MIT mode and a fault bitmask is published on /motor_fault (std_msgs/UInt8).
+// Motors stay off until the operator re-enables via /can_enable true.
 //
-// *** YOU MUST CONFIGURE HOME_DIR AND HOME_BACKOFF_RAD FOR YOUR ROBOT. ***
-//
-// HOME_DIR : direction to drive toward the mechanical stop.
-//   +1 = drive toward +MIT_P_MAX,  -1 = drive toward -MIT_P_MAX,  0 = skip
-//
-// HOME_BACKOFF_RAD : how far to back off from the end-stop (OUTPUT shaft, rad)
-//   to reach the sitting / zero position.  Always positive.
-//   Measure once: with HOME_BACKOFF_RAD all zeros run a homing sweep; the
-//   motors will stop at their end-stops.  Observe the sitting angle for each
-//   joint (via /joint_states or RViz), set that value here, reflash.
-//
-// Motor order: FR_hip, FR_sho, FR_kne, FL_hip, FL_sho, FL_kne,
-//              RR_hip, RR_sho, RR_kne, RL_hip, RL_sho, RL_kne
+// MAX_POS_STEP_RAD rate-limits every position command to prevent sudden large
+// jumps that cause current spikes. At 50 Hz: 0.20 rad/tick = 10 rad/s output.
 // ─────────────────────────────────────────────────────────────────────────────
-static const int8_t HOME_DIR[12] = {
-    0, 0, 0,    // FR hip, sho, kne  ← set to +1 or -1 per joint
-    0, 0, 0,    // FL hip, sho, kne
-    0, 0, 0,    // RR hip, sho, kne
-    0, 0, 0,    // RL hip, sho, kne
-};
-static const float HOME_BACKOFF_RAD[12] = {
-    0.0f, 0.0f, 0.0f,   // FR
-    0.0f, 0.0f, 0.0f,   // FL
-    0.0f, 0.0f, 0.0f,   // RR
-    0.0f, 0.0f, 0.0f,   // RL
-};
-
-#define HOME_KP                 2.0f    // N·m/rad — gentle stiffness during seek
-#define HOME_KD                 1.5f    // N·m·s/rad
-#define HOME_SEEK_TARGET        14.0f   // rad — well past any physical stop
-#define HOME_STALL_CUR_THRESH   4.0f    // A   — current above this = stalled
-#define HOME_STALL_VEL_THRESH   0.15f   // rad/s — velocity below this = stalled
-#define HOME_STALL_CONFIRM      8       // consecutive 20 ms ticks to confirm stall
-#define HOME_SEEK_TIMEOUT_MS    10000UL // give up seeking after 10 s
-#define HOME_BACKOFF_TIMEOUT_MS  5000UL // give up backing off after 5 s
-#define HOME_BACKOFF_THRESH_RAD  0.05f  // within 0.05 rad = reached backoff target
-#define HOME_ZERO_SETTLE_MS      80UL   // wait after set-zero for flash write
+#define TEMP_CUTOFF_C       75.0f   // °C  — thermal cutoff
+#define KT_OUTPUT           4.30f   // N·m/A — AK45-36 KV80, 36:1 gear (output shaft)
+#define CURRENT_CUTOFF_A    2.0f    // A   — instantaneous per-motor current cutoff
+#define CURRENT_CUTOFF_NM   (CURRENT_CUTOFF_A * KT_OUTPUT)  // 8.6 N·m
+#define TORQUE_CUTOFF_NM    14.0f   // N·m — sustained torque / stall cutoff
+#define STALL_TICKS         100     // ticks at 50 Hz ≈ 2 s sustained
+#define MAX_POS_STEP_RAD    0.20f   // rad per control tick (10 rad/s max)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BNO085 IMU
@@ -229,36 +202,24 @@ static bool   gps_fix_valid = false;
 // HARDWARE OBJECTS
 // ─────────────────────────────────────────────────────────────────────────────
 FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16> can1;
-FlexCAN_T4<CAN2, RX_SIZE_256, TX_SIZE_16> can2;
+FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> can3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────────────────────
-static float joint_cmd[12] = {0.0f};   // desired motor positions (rad)
+static float joint_cmd[8] = {0.0f};   // desired motor positions (rad)
 static bool  motors_enabled = false;
 
 // Latest motor feedback — updated whenever a response frame arrives
-static float fb_pos[12]  = {0.0f};  // rad
-static float fb_vel[12]  = {0.0f};  // rad/s
-static float fb_cur[12]  = {0.0f};  // A (proportional to torque)
-static float fb_temp[12] = {0.0f};  // °C  (raw byte - 40)
+static float fb_pos[8]  = {0.0f};  // rad
+static float fb_vel[8]  = {0.0f};  // rad/s
+static float fb_cur[8]  = {0.0f};  // A (proportional to torque)
+static float fb_temp[8] = {0.0f};  // °C  (raw byte - 40)
 
-// ── Homing state ──────────────────────────────────────────────────────────────
-enum MotorHomePhase : uint8_t {
-    MHOME_SEEK,      // driving toward end-stop
-    MHOME_BACKOFF,   // backing away to sitting position
-    MHOME_ZERO,      // waiting for set-zero flash write
-    MHOME_DONE,      // complete
-};
-static MotorHomePhase  home_phase[12];
-static float           home_stall_pos[12];        // fb_pos when stall detected
-static float           home_backoff_tgt[12];      // fb_pos target after backoff
-static uint8_t         home_stall_count[12];      // stall debounce counter
-static unsigned long   home_seek_start_ms[12];
-static unsigned long   home_backoff_start_ms[12];
-static bool            home_zero_sent[12];
-static unsigned long   home_zero_time_ms[12];
-static unsigned long   home_last_tick_ms  = 0;    // 50 Hz homing tick
+// ── Per-motor safety state ────────────────────────────────────────────────────
+static bool    motor_faulted[8]     = {};  // true = motor removed from MIT mode
+static uint8_t motor_stall_ticks[8] = {};  // consecutive ticks above TORQUE_CUTOFF
+static float   last_sent_cmd[8]     = {};  // last commanded position (rate limiter)
 
 // ─────────────────────────────────────────────────────────────────────────────
 // micro-ROS HANDLES
@@ -276,7 +237,7 @@ rcl_publisher_t     imu_pub;
 rcl_publisher_t     euler_pub;
 rcl_publisher_t     fix_pub;
 rcl_publisher_t     joint_states_pub;
-rcl_publisher_t     homed_pub;
+rcl_publisher_t     fault_pub;
 rcl_timer_t         imu_timer;
 rcl_timer_t         gps_timer;
 
@@ -284,20 +245,20 @@ std_msgs__msg__Float32MultiArray angles_msg;
 std_msgs__msg__Float32MultiArray gains_msg;
 std_msgs__msg__UInt8             calibrate_msg;
 std_msgs__msg__Bool              enable_msg;
-std_msgs__msg__Bool              homed_msg;
+std_msgs__msg__UInt8             fault_msg;    // bitmask: bit i = motor i faulted
 sensor_msgs__msg__Imu            imu_msg;
 geometry_msgs__msg__Vector3      euler_msg;
 sensor_msgs__msg__NavSatFix      fix_msg;
 std_msgs__msg__Float32MultiArray joint_states_msg;
 
-float angles_buf[12];
+float angles_buf[8];
 float gains_buf[2];           // [kp, kd]
-float joint_states_buf[48];   // pos[12] + vel[12] + cur[12] + temp[12]
+float joint_states_buf[32];   // pos[8] + vel[8] + cur[8] + temp[8]
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AGENT STATE MACHINE
 // ─────────────────────────────────────────────────────────────────────────────
-enum AgentState { WAITING_AGENT, HOMING, AGENT_CONNECTED, AGENT_DISCONNECTED };
+enum AgentState { WAITING_AGENT, AGENT_CONNECTED, AGENT_DISCONNECTED };
 static AgentState agent_state = WAITING_AGENT;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -338,7 +299,7 @@ static void can_send_std(uint8_t bus, uint8_t motor_id,
     for (int i = 0; i < len; i++) msg.buf[i] = data[i];
 
     if (bus == 1) can1.write(msg);
-    else          can2.write(msg);
+    else          can3.write(msg);
 }
 
 // Enter MIT motor mode
@@ -410,7 +371,7 @@ static bool parse_mit_response(const CAN_message_t &msg) {
     uint8_t id = msg.buf[0];   // motor ID is in data[0]
 
     int idx = -1;
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 8; i++) {
         if (MOTOR_ID[i] == id) { idx = i; break; }
     }
     if (idx < 0) return false;
@@ -423,26 +384,78 @@ static bool parse_mit_response(const CAN_message_t &msg) {
     fb_vel[idx]  = uint_to_float(vel_raw, -MIT_V_MAX, MIT_V_MAX, 12);
     fb_cur[idx]  = uint_to_float(cur_raw, -MIT_T_MAX, MIT_T_MAX, 12);
     fb_temp[idx] = (float)msg.buf[6] - 40.0f;   // raw - 40 = °C
+
+    // ── Safety checks ────────────────────────────────────────────────────────
+    if (!motor_faulted[idx]) {
+        // Thermal cutoff
+        if (fb_temp[idx] >= TEMP_CUTOFF_C) {
+            trigger_fault(idx);
+            return true;
+        }
+        // Instantaneous current cutoff (2 A)
+        if (fabsf(fb_cur[idx]) >= CURRENT_CUTOFF_NM) {
+            trigger_fault(idx);
+            return true;
+        }
+        // Sustained torque / stall cutoff
+        if (fabsf(fb_cur[idx]) >= TORQUE_CUTOFF_NM) {
+            if (++motor_stall_ticks[idx] >= STALL_TICKS) {
+                trigger_fault(idx);
+                return true;
+            }
+        } else {
+            motor_stall_ticks[idx] = 0;
+        }
+        // Motor error flags
+        if (msg.buf[7] != 0) {
+            trigger_fault(idx);
+            return true;
+        }
+    }
     return true;
 }
 
 static void all_motors_enter_mode() {
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 8; i++) {
         motor_enter_mode(MOTOR_BUS[i], MOTOR_ID[i]);
         delay(2);
     }
 }
 
 static void all_motors_exit_mode() {
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 8; i++) {
         motor_exit_mode(MOTOR_BUS[i], MOTOR_ID[i]);
         delay(2);
     }
 }
 
+// Publish the current fault bitmask on /motor_fault
+static void publish_fault() {
+    uint8_t bits = 0;
+    for (int i = 0; i < 8; i++) {
+        if (motor_faulted[i]) bits |= (uint8_t)(1u << i);
+    }
+    fault_msg.data = bits;
+    rcl_publish(&fault_pub, &fault_msg, NULL);
+}
+
+// Trigger a full motor shutdown and publish fault
+static void trigger_fault(int idx) {
+    motor_faulted[idx] = true;
+    all_motors_exit_mode();
+    motors_enabled = false;
+    publish_fault();
+}
+
 static void send_joint_cmds(const float *cmds) {
-    for (int i = 0; i < 12; i++) {
-        float pos = constrain_f(cmds[i], JOINT_MIN, JOINT_MAX);
+    for (int i = 0; i < 8; i++) {
+        if (motor_faulted[i]) continue;
+        // Rate-limit: clamp position change to MAX_POS_STEP_RAD per tick
+        float step = cmds[i] - last_sent_cmd[i];
+        if (step >  MAX_POS_STEP_RAD) step =  MAX_POS_STEP_RAD;
+        if (step < -MAX_POS_STEP_RAD) step = -MAX_POS_STEP_RAD;
+        float pos = constrain_f(last_sent_cmd[i] + step, JOINT_MIN, JOINT_MAX);
+        last_sent_cmd[i] = pos;
         motor_send_mit(MOTOR_BUS[i], MOTOR_ID[i],
                        pos, 0.0f, g_kp, g_kd, 0.0f);
     }
@@ -453,16 +466,16 @@ static void poll_can_rx() {
     CAN_message_t msg;
     bool updated = false;
     while (can1.read(msg)) { if (parse_mit_response(msg)) updated = true; }
-    while (can2.read(msg)) { if (parse_mit_response(msg)) updated = true; }
+    while (can3.read(msg)) { if (parse_mit_response(msg)) updated = true; }
 
     if (updated && agent_state == AGENT_CONNECTED) {
-        for (int i = 0; i < 12; i++) {
+        for (int i = 0; i < 8; i++) {
             joint_states_buf[i]      = fb_pos[i];
-            joint_states_buf[i + 12] = fb_vel[i];
-            joint_states_buf[i + 24] = fb_cur[i];
-            joint_states_buf[i + 36] = fb_temp[i];
+            joint_states_buf[i +  8] = fb_vel[i];
+            joint_states_buf[i + 16] = fb_cur[i];
+            joint_states_buf[i + 24] = fb_temp[i];
         }
-        joint_states_msg.data.size = 48;
+        joint_states_msg.data.size = 32;
         rcl_publish(&joint_states_pub, &joint_states_msg, NULL);
     }
 }
@@ -506,8 +519,8 @@ static void bno_poll() {
 void angles_callback(const void *msg_in) {
     const std_msgs__msg__Float32MultiArray *msg =
         (const std_msgs__msg__Float32MultiArray *)msg_in;
-    if (msg->data.size != 12) return;
-    for (int i = 0; i < 12; i++)
+    if (msg->data.size != 8) return;
+    for (int i = 0; i < 8; i++)
         joint_cmd[i] = msg->data.data[i];
     if (motors_enabled)
         send_joint_cmds(joint_cmd);
@@ -526,7 +539,7 @@ void gains_callback(const void *msg_in) {
 void calibrate_callback(const void *msg_in) {
     const std_msgs__msg__UInt8 *msg = (const std_msgs__msg__UInt8 *)msg_in;
     uint8_t target_id = msg->data;
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 8; i++) {
         if (MOTOR_ID[i] == target_id) {
             motor_set_zero(MOTOR_BUS[i], MOTOR_ID[i]);
             return;
@@ -537,8 +550,13 @@ void calibrate_callback(const void *msg_in) {
 void enable_callback(const void *msg_in) {
     const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msg_in;
     if (msg->data) {
+        // Clear fault state so the operator can retry after cooling / inspection
+        memset(motor_faulted,     0, sizeof(motor_faulted));
+        memset(motor_stall_ticks, 0, sizeof(motor_stall_ticks));
+        memset(last_sent_cmd,     0, sizeof(last_sent_cmd));
         all_motors_enter_mode();
         motors_enabled = true;
+        publish_fault();   // publish 0x00 to confirm faults cleared
     } else {
         all_motors_exit_mode();
         motors_enabled = false;
@@ -674,9 +692,9 @@ bool create_entities() {
             "joint_states") != RCL_RET_OK) return false;
 
     if (rclc_publisher_init_default(
-            &homed_pub, &node,
-            ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Bool),
-            "motors_homed") != RCL_RET_OK) return false;
+            &fault_pub, &node,
+            ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, UInt8),
+            "motor_fault") != RCL_RET_OK) return false;
 
     // IMU timer — 50 Hz
     if (rclc_timer_init_default(
@@ -717,7 +735,7 @@ void destroy_entities() {
     rcl_publisher_fini(&euler_pub,        &node);
     rcl_publisher_fini(&fix_pub,          &node);
     rcl_publisher_fini(&joint_states_pub, &node);
-    rcl_publisher_fini(&homed_pub,        &node);
+    rcl_publisher_fini(&fault_pub,        &node);
     rcl_subscription_fini(&angles_sub,    &node);
     rcl_subscription_fini(&gains_sub,     &node);
     rcl_subscription_fini(&calibrate_sub, &node);
@@ -746,18 +764,18 @@ void setup() {
     can1.setMaxMB(16);
     can1.enableFIFO();
 
-    // CAN2 — rear legs (RR + RL)
-    can2.begin();
-    can2.setBaudRate(CAN_BAUD);
-    can2.setMaxMB(16);
-    can2.enableFIFO();
+    // CAN3 — rear legs (RR + RL)  TX=31, RX=30
+    can3.begin();
+    can3.setBaudRate(CAN_BAUD);
+    can3.setMaxMB(16);
+    can3.enableFIFO();
 
     delay(100);   // let transceivers settle
 
-    // BNO085 on Wire1 (SDA=17, SCL=16)
-    Wire1.begin();
-    Wire1.setClock(400000);
-    bno_ok = bno08x.begin_I2C(BNO085_ADDR, &Wire1);
+    // BNO085 on Wire (SDA=18, SCL=19)
+    Wire.begin();
+    Wire.setClock(400000);
+    bno_ok = bno08x.begin_I2C(BNO085_ADDR, &Wire);
     if (bno_ok) {
         // Rotation vector fuses accel + gyro + magnetometer → absolute heading
         bno08x.enableReport(SH2_ROTATION_VECTOR,        IMU_INTERVAL_US);
@@ -765,23 +783,23 @@ void setup() {
         bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED,   IMU_INTERVAL_US);
     }
 
-    // SAM-M10Q on Serial2 (RX=7, TX=8)
-    Serial2.begin(GPS_BAUD);
+    // SAM-M10Q on Serial1 (RX=0, TX=1)
+    Serial1.begin(GPS_BAUD);
 
     delay(100);
 
     // micro-ROS message buffers
     angles_msg.data.data     = angles_buf;
     angles_msg.data.size     = 0;
-    angles_msg.data.capacity = 12;
+    angles_msg.data.capacity = 8;
 
     gains_msg.data.data     = gains_buf;
     gains_msg.data.size     = 0;
     gains_msg.data.capacity = 2;
 
     joint_states_msg.data.data     = joint_states_buf;
-    joint_states_msg.data.size     = 48;
-    joint_states_msg.data.capacity = 48;
+    joint_states_msg.data.size     = 32;
+    joint_states_msg.data.capacity = 32;
 
     static char imu_frame[]  = "imu_link";
     imu_msg.header.frame_id.data     = imu_frame;
@@ -820,8 +838,8 @@ void loop() {
     static unsigned long last_ping_ms  = 0;
 
     // Always feed GPS chars to TinyGPSPlus regardless of agent state
-    while (Serial2.available() > 0) {
-        if (gps.encode(Serial2.read())) {
+    while (Serial1.available() > 0) {
+        if (gps.encode(Serial1.read())) {
             // New sentence parsed — update GPS state
             if (gps.location.isValid()) {
                 gps_lat       = gps.location.lat();
@@ -846,128 +864,15 @@ void loop() {
             }
             if (rmw_uros_ping_agent(100, 1) == RMW_RET_OK) {
                 if (create_entities()) {
-                    // Initialise homing state for all motors
-                    for (int i = 0; i < 12; i++) {
-                        home_phase[i]       = MHOME_SEEK;
-                        home_stall_pos[i]   = 0.0f;
-                        home_backoff_tgt[i] = 0.0f;
-                        home_stall_count[i] = 0;
-                        home_seek_start_ms[i]    = millis();
-                        home_backoff_start_ms[i] = 0;
-                        home_zero_sent[i]   = false;
-                        home_zero_time_ms[i]= 0;
-                    }
-                    home_last_tick_ms = millis();
-                    // Enter MIT mode so we can send position commands during homing
-                    all_motors_enter_mode();
-                    agent_state  = HOMING;
+                    memset(motor_faulted,     0, sizeof(motor_faulted));
+                    memset(motor_stall_ticks, 0, sizeof(motor_stall_ticks));
+                    memset(last_sent_cmd,     0, sizeof(last_sent_cmd));
+                    agent_state  = AGENT_CONNECTED;
                     last_ping_ms = millis();
                     digitalWrite(LED_BUILTIN, HIGH);
                 }
             }
             break;
-
-        case HOMING: {
-            poll_can_rx();
-            rclc_executor_spin_some(&executor, RCL_MS_TO_NS(5));
-
-            // Run at 50 Hz (every 20 ms)
-            if (millis() - home_last_tick_ms < 20) break;
-            home_last_tick_ms = millis();
-
-            bool all_done = true;
-
-            for (int i = 0; i < 12; i++) {
-                if (home_phase[i] == MHOME_DONE) continue;
-                all_done = false;
-
-                // Motors with HOME_DIR == 0 are skipped immediately
-                if (HOME_DIR[i] == 0) {
-                    home_phase[i] = MHOME_DONE;
-                    continue;
-                }
-
-                switch (home_phase[i]) {
-
-                    case MHOME_SEEK: {
-                        // Drive gently toward the end-stop
-                        float tgt = (float)HOME_DIR[i] * HOME_SEEK_TARGET;
-                        motor_send_mit(MOTOR_BUS[i], MOTOR_ID[i],
-                                       tgt, 0.0f, HOME_KP, HOME_KD, 0.0f);
-
-                        bool stalled = (fabsf(fb_vel[i]) < HOME_STALL_VEL_THRESH &&
-                                        fabsf(fb_cur[i]) > HOME_STALL_CUR_THRESH);
-                        bool timedout = (millis() - home_seek_start_ms[i] > HOME_SEEK_TIMEOUT_MS);
-
-                        if (stalled) home_stall_count[i]++;
-                        else         home_stall_count[i] = 0;
-
-                        if (home_stall_count[i] >= HOME_STALL_CONFIRM || timedout) {
-                            home_stall_pos[i]   = fb_pos[i];
-                            home_backoff_tgt[i] = fb_pos[i]
-                                                  - (float)HOME_DIR[i] * HOME_BACKOFF_RAD[i];
-                            home_backoff_start_ms[i] = millis();
-                            home_phase[i] = MHOME_BACKOFF;
-                        }
-                        break;
-                    }
-
-                    case MHOME_BACKOFF: {
-                        // Move to sitting position (stored-zero reference)
-                        motor_send_mit(MOTOR_BUS[i], MOTOR_ID[i],
-                                       home_backoff_tgt[i], 0.0f,
-                                       DEFAULT_KP, DEFAULT_KD, 0.0f);
-
-                        bool arrived  = fabsf(fb_pos[i] - home_backoff_tgt[i])
-                                        < HOME_BACKOFF_THRESH_RAD;
-                        bool timedout = (millis() - home_backoff_start_ms[i]
-                                         > HOME_BACKOFF_TIMEOUT_MS);
-
-                        if (arrived || timedout) {
-                            home_phase[i] = MHOME_ZERO;
-                        }
-                        break;
-                    }
-
-                    case MHOME_ZERO: {
-                        // Send set-zero once, then wait for flash write, then re-enter MIT
-                        if (!home_zero_sent[i]) {
-                            motor_set_zero(MOTOR_BUS[i], MOTOR_ID[i]);
-                            home_zero_sent[i]  = true;
-                            home_zero_time_ms[i] = millis();
-                        } else if (millis() - home_zero_time_ms[i] > HOME_ZERO_SETTLE_MS) {
-                            // set-zero exits MIT mode — re-enter
-                            motor_enter_mode(MOTOR_BUS[i], MOTOR_ID[i]);
-                            home_phase[i] = MHOME_DONE;
-                        }
-                        break;
-                    }
-
-                    default: break;
-                }
-            }
-
-            if (all_done) {
-                memset(joint_cmd, 0, sizeof(joint_cmd));
-                motors_enabled = true;
-                homed_msg.data = true;
-                rcl_publish(&homed_pub, &homed_msg, NULL);
-                agent_state = AGENT_CONNECTED;
-            }
-
-            // Keep pinging agent so disconnect is detected during homing
-            if (millis() - last_ping_ms > 1000) {
-                last_ping_ms = millis();
-                if (rmw_uros_ping_agent(100, 3) != RMW_RET_OK) {
-                    all_motors_exit_mode();
-                    motors_enabled = false;
-                    destroy_entities();
-                    agent_state = AGENT_DISCONNECTED;
-                    digitalWrite(LED_BUILTIN, LOW);
-                }
-            }
-            break;
-        }
 
         case AGENT_CONNECTED:
             poll_can_rx();

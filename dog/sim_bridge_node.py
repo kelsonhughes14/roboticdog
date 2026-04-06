@@ -11,7 +11,7 @@ In hardware mode the Teensy 4.1 firmware handles:
 In sim mode this node replaces the Teensy:
 
 Subscriptions:
-  /joint_angles         (std_msgs/Float32MultiArray[12])  from gait_node
+  /joint_angles         (std_msgs/Float32MultiArray[8])   from gait_node (8DOF, no hips)
   /joint_states         (sensor_msgs/JointState)          from joint_state_broadcaster
   /imu/data             (sensor_msgs/Imu)                 from Gazebo IMU sensor
   /odom                 (nav_msgs/Odometry)                from Gazebo OdometryPublisher
@@ -42,12 +42,12 @@ _WORLD_NAME = 'dog_world'
 
 
 # Joint order expected by /joint_group_position_controller/commands
-# Must match joint order in ros2_controllers.yaml
+# Must match joint order in ros2_controllers.yaml (hip joints removed, 8DOF)
 JOINT_NAMES = [
-    'fr_hip_joint', 'fr_shoulder_joint', 'fr_knee_joint',
-    'fl_hip_joint', 'fl_shoulder_joint', 'fl_knee_joint',
-    'rr_hip_joint', 'rr_shoulder_joint', 'rr_knee_joint',
-    'rl_hip_joint', 'rl_shoulder_joint', 'rl_knee_joint',
+    'fr_shoulder_joint', 'fr_knee_joint',
+    'fl_shoulder_joint', 'fl_knee_joint',
+    'rr_shoulder_joint', 'rr_knee_joint',
+    'rl_shoulder_joint', 'rl_knee_joint',
 ]
 NUM_JOINTS = len(JOINT_NAMES)
 
@@ -60,26 +60,16 @@ _JOINT_INDEX = {name: i for i, name in enumerate(JOINT_NAMES)}
 # so to recover the geometric knee angle for the Gazebo position controller:
 #   geometric_knee = motor_knee_cmd - motor_shoulder_cmd
 #
-# Left-leg hip joints (FL index 3, RL index 9) are physically mirrored; the
-# firmware sends the same-sign command but the hardware reverses direction.
-# The URDF joint axis is the same for all legs, so we negate FL/RL hip cmds.
-#
-# Indices within the 12-element command vector:
-#   [FR_hip(0), FR_sho(1), FR_kne(2),
-#    FL_hip(3), FL_sho(4), FL_kne(5),
-#    RR_hip(6), RR_sho(7), RR_kne(8),
-#    RL_hip(9), RL_sho(10),RL_kne(11)]
-_LEFT_HIP_IDX  = (3, 9)          # negate
-_SHOULDER_IDX  = (1, 4, 7, 10)   # direct (used for knee decoupling)
-_KNEE_IDX      = (2, 5, 8, 11)   # geometric = motor_knee − motor_shoulder
+# Indices within the 8-element command vector:
+#   [FR_sho(0), FR_kne(1), FL_sho(2), FL_kne(3),
+#    RR_sho(4), RR_kne(5), RL_sho(6), RL_kne(7)]
+_SHOULDER_IDX = (0, 2, 4, 6)
+_KNEE_IDX     = (1, 3, 5, 7)
 
 
 def _motor_to_geometric(motor: list) -> list:
-    """Convert 12 hardware motor commands to 12 geometric joint angles."""
+    """Convert 8 hardware motor commands to 8 geometric joint angles."""
     geo = list(motor)
-    # Negate left-leg hip commands
-    for i in _LEFT_HIP_IDX:
-        geo[i] = -geo[i]
     # Decouple belt-drive knee: geometric_knee = motor_knee - motor_shoulder
     for sho, kne in zip(_SHOULDER_IDX, _KNEE_IDX):
         geo[kne] = motor[kne] - motor[sho]
@@ -172,7 +162,7 @@ class SimBridgeNode(Node):
 
     # ─────────────────────────────────────────────────────────────────
     def _joint_angles_cb(self, msg: Float32MultiArray):
-        """Cache and forward /joint_angles (Float32[12]) → position controller (Float64[12])."""
+        """Cache and forward /joint_angles (Float32[8]) → position controller (Float64[8])."""
         data = msg.data
         if len(data) != NUM_JOINTS:
             self.get_logger().warn(

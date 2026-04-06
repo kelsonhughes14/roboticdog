@@ -11,13 +11,6 @@ Hardware mode (default, sim:=false):
   - gait_node           (gait generator + IK, publishes /joint_angles in radians)
   - torque_monitor_node (logs per-motor current from /joint_states)
 
-  On every connection the Teensy runs a homing sweep (hardware mode only):
-    Each joint is driven gently toward its mechanical end-stop (current-sensing
-    stall detection), then backed off to the sitting position, then set-zero is
-    called so position 0 = sitting.  The sweep completes before any /joint_angles
-    commands are executed.  Result published on /motors_homed (std_msgs/Bool).
-    Configure HOME_DIR[] and HOME_BACKOFF_RAD[] in main.cpp before first use.
-
 Simulation mode (sim:=true):
   - ign gazebo        (Gazebo Fortress with flat-ground world)
   - robot_state_publisher

@@ -55,6 +55,7 @@ _SIT_RAMP_DURATION = 2.0   # seconds — time to ease into the sit position
 
 class RobotState:
     IDLE         = 'IDLE'
+    POSITIONING  = 'POSITIONING'   # compliant leg-by-leg capture on platform
     DEEP_SITTING = 'DEEP_SITTING'
     SITTING      = 'SITTING'
     STANDING     = 'STANDING'
@@ -106,15 +107,21 @@ class StateManagerNode(Node):
         self._backflip_start = 0.0
 
         # Ramps — smoothly interpolate between poses
-        self._current_angles       = [0.0] * 12   # last published angles (motor frame)
+        self._current_angles       = [0.0] * 8   # last published angles (motor frame)
         self._sit_ramp_start       = 0.0
-        self._sit_ramp_from        = [0.0] * 12
+        self._sit_ramp_from        = [0.0] * 8
         self._deep_sit_ramp_start  = 0.0
-        self._deep_sit_ramp_from   = [0.0] * 12
+        self._deep_sit_ramp_from   = [0.0] * 8
 
-        self.create_subscription(Joy,    'joy',       self._joy_callback, 10)
-        self.create_subscription(Vector3,'imu/euler', self._imu_callback, 10)
-        self.create_subscription(Bool,   'estop',     self._estop_callback, 10)
+        # Positioning state — leg-by-leg capture on platform
+        self._fb_pos              = [0.0] * 8   # latest motor-frame positions from Teensy
+        self._leg_captured        = [False] * 4  # FR, FL, RR, RL
+        self._positioning_angles  = [0.0] * 8   # IK-frame captured standing positions
+
+        self.create_subscription(Joy,              'joy',          self._joy_callback,    10)
+        self.create_subscription(Vector3,          'imu/euler',    self._imu_callback,    10)
+        self.create_subscription(Bool,             'estop',        self._estop_callback,  10)
+        self.create_subscription(Float32MultiArray,'/joint_states', self._fb_callback,    10)
 
         self.state_pub     = self.create_publisher(String,           'robot_state',  10)
         self.gait_pub      = self.create_publisher(Twist,            'gait_command', 10)
@@ -127,7 +134,12 @@ class StateManagerNode(Node):
         self.create_timer(0.5, self._publish_state)
         self.create_timer(0.02, self._timed_actions_tick)   # 50 Hz — matches gait loop
 
-        self.get_logger().info('State manager ready. E-STOP active — press Start to clear, then A to stand.')
+        self.get_logger().info(
+            'State manager ready. E-STOP active.\n'
+            '  Place robot on platform, then press Start to enter POSITIONING.\n'
+            '  A=capture FR  B=capture FL  X=capture RR  Y=capture RL\n'
+            '  Start (again) = confirm all legs and stand.'
+        )
         self._set_state(RobotState.ESTOP)
 
     # ────────────────────────────────────────────────────────────────
@@ -143,7 +155,10 @@ class StateManagerNode(Node):
         estop_msg.data = (new_state == RobotState.ESTOP)
         self.estop_pub.publish(estop_msg)
 
-        if new_state == RobotState.DEEP_SITTING:
+        if new_state == RobotState.POSITIONING:
+            self._leg_captured       = [False] * 4
+            self._positioning_angles = [0.0] * 8
+        elif new_state == RobotState.DEEP_SITTING:
             self._deep_sit_ramp_from  = list(self._current_angles)
             self._deep_sit_ramp_start = time.time()
         elif new_state == RobotState.SITTING:
@@ -155,9 +170,9 @@ class StateManagerNode(Node):
             msg = Bool()
             msg.data = False
             self.enable_pub.publish(msg)
-        elif new_state in (RobotState.DEEP_SITTING, RobotState.SITTING,
-                           RobotState.STANDING, RobotState.RIGHTING,
-                           RobotState.AUTONOMOUS):
+        elif new_state in (RobotState.POSITIONING, RobotState.DEEP_SITTING,
+                           RobotState.SITTING, RobotState.STANDING,
+                           RobotState.RIGHTING, RobotState.AUTONOMOUS):
             # Re-enter motor mode if recovering from E-stop
             msg = Bool()
             msg.data = True
@@ -184,14 +199,37 @@ class StateManagerNode(Node):
         if self.state == RobotState.ESTOP:
             start = msg.buttons[self._btn_start] if self._btn_start < len(msg.buttons) else 0
             if start == 1 and self.prev_start == 0:
-                self.get_logger().info('E-STOP cleared — entering deep sit.')
-                self._set_state(RobotState.DEEP_SITTING)
+                self.get_logger().info('E-STOP cleared — entering POSITIONING.')
+                self._set_state(RobotState.POSITIONING)
             self.prev_start = start
 
             # B button triggers self-righting from fallen position
             if b_btn == 1 and self.prev_b == 0:
                 self._start_righting()
             self.prev_b = b_btn
+            return
+
+        if self.state == RobotState.POSITIONING:
+            _LEG_BUTTONS = [
+                (msg.buttons[self._btn_a] if self._btn_a < len(msg.buttons) else 0),  # FR
+                (b_btn),                                                                 # FL
+                (msg.buttons[self._btn_x] if self._btn_x < len(msg.buttons) else 0),  # RR
+                (y_btn),                                                                 # RL
+            ]
+            _LEG_PREV = [self.prev_a, self.prev_b, self.prev_x, self.prev_y]
+            _LEG_NAMES = ['FR', 'FL', 'RR', 'RL']
+            for leg, (btn, prev) in enumerate(zip(_LEG_BUTTONS, _LEG_PREV)):
+                if btn == 1 and prev == 0 and not self._leg_captured[leg]:
+                    self._capture_leg(leg)
+            self.prev_a = _LEG_BUTTONS[0]
+            self.prev_b = _LEG_BUTTONS[1]
+            self.prev_x = _LEG_BUTTONS[2]
+            self.prev_y = _LEG_BUTTONS[3]
+
+            start = msg.buttons[self._btn_start] if self._btn_start < len(msg.buttons) else 0
+            if start == 1 and self.prev_start == 0:
+                self._confirm_positioning()
+            self.prev_start = start
             return
 
         a = msg.buttons[self._btn_a] if self._btn_a < len(msg.buttons) else 0
@@ -290,6 +328,39 @@ class StateManagerNode(Node):
         pose.y = body_pitch
         self.pose_pub.publish(pose)
 
+    # ── Positioning helpers ───────────────────────────────────────────
+
+    def _fb_callback(self, msg: Float32MultiArray):
+        """Track latest motor-frame positions from Teensy feedback."""
+        if len(msg.data) >= 8:
+            self._fb_pos = list(msg.data[0:8])
+
+    def _capture_leg(self, leg: int):
+        """Lock one leg at its current physical position."""
+        i = leg * 2
+        # fb_pos is in motor frame; convert to IK frame by applying direction
+        d_sho = JOINT_DIRECTION.get((leg, 1), 1)
+        d_kne = JOINT_DIRECTION.get((leg, 2), 1)
+        self._positioning_angles[i]     = d_sho * self._fb_pos[i]
+        self._positioning_angles[i + 1] = d_kne * self._fb_pos[i + 1]
+        self._leg_captured[leg] = True
+        names = ['FR', 'FL', 'RR', 'RL']
+        self.get_logger().info(
+            f'POSITIONING: {names[leg]} captured — '
+            f'sho={self._positioning_angles[i]:.3f} rad  '
+            f'kne={self._positioning_angles[i+1]:.3f} rad  '
+            f'({sum(self._leg_captured)}/4 locked)'
+        )
+
+    def _confirm_positioning(self):
+        """Capture any remaining free legs and transition to STANDING."""
+        for leg in range(4):
+            if not self._leg_captured[leg]:
+                self._capture_leg(leg)
+        self.get_logger().info('POSITIONING complete — transitioning to STANDING.')
+        self._set_state(RobotState.STANDING)
+        self._publish_joint_angles(self._positioning_angles)
+
     # ────────────────────────────────────────────────────────────────
     def _imu_callback(self, msg: Vector3):
         self._last_roll = msg.x   # always track for righting direction
@@ -339,7 +410,18 @@ class StateManagerNode(Node):
 
     def _timed_actions_tick(self):
         """Phase sequencer called at 10 Hz for all timed motion states."""
-        if self.state == RobotState.DEEP_SITTING:
+        if self.state == RobotState.POSITIONING:
+            # Build command: locked legs hold captured position, free legs track fb_pos
+            angles = list(self._positioning_angles)
+            for leg in range(4):
+                if not self._leg_captured[leg]:
+                    i = leg * 2
+                    d_sho = JOINT_DIRECTION.get((leg, 1), 1)
+                    d_kne = JOINT_DIRECTION.get((leg, 2), 1)
+                    angles[i]     = d_sho * self._fb_pos[i]
+                    angles[i + 1] = d_kne * self._fb_pos[i + 1]
+            self._publish_joint_angles(angles)
+        elif self.state == RobotState.DEEP_SITTING:
             elapsed = time.time() - self._deep_sit_ramp_start
             if elapsed < _SIT_RAMP_DURATION:
                 t = elapsed / _SIT_RAMP_DURATION
@@ -458,10 +540,10 @@ class StateManagerNode(Node):
         self.get_logger().info('Backflip initiated')
 
     def _make_push_angles(self, push_right: bool) -> list:
-        """Return 12 motor-command angles for the righting push phase.
+        """Return 8 motor-command angles for the righting push phase (8DOF, no hips).
 
-        push leg  – hip splayed outward, shoulder/knee angled toward the ground.
-        tuck leg  – hip pulled inward, shoulder/knee tightly folded.
+        push leg  – shoulder/knee angled toward the ground.
+        tuck leg  – shoulder/knee tightly folded.
 
         When inverted (|roll| >= 120°) the legs must reach over the body to
         touch the ground, requiring a large shoulder angle:
@@ -477,11 +559,11 @@ class StateManagerNode(Node):
         #   push_left:  FL/RL +0.6 → geo leftward;  FR/RR -0.6 → geo leftward ✓
         # All four hips move in the same world direction regardless of push side.
         if self._righting_inverted:
-            push = [-0.9, -2.70, -1.1346]   # legs reach over body to ground
-            tuck = [+0.9,  1.30, -1.1346]   # folded, knee at sit position
+            push = [-2.70, -1.1346]   # legs reach over body to ground
+            tuck = [ 1.30, -1.1346]   # folded, knee at sit position
         else:
-            push = [-0.9,  2.70, -1.1346]   # shoulder sweeps above body (~155°)
-            tuck = [+0.9,  1.30, -1.1346]   # folded, knee at sit position
+            push = [ 2.70, -1.1346]   # shoulder sweeps above body (~155°)
+            tuck = [ 1.30, -1.1346]   # folded, knee at sit position
         if push_right:
             return push + tuck + push + tuck   # FR push, FL tuck, RR push, RL tuck
         return tuck + push + tuck + push       # FR tuck, FL push, RR tuck, RL push
@@ -530,8 +612,8 @@ class StateManagerNode(Node):
         msg = Float32MultiArray()
         motor = []
         for leg in range(4):
-            for joint in range(3):
-                i = leg * 3 + joint
+            for joint in [1, 2]:   # shoulder=1, knee=2 (hip removed, 8DOF)
+                i = leg * 2 + (joint - 1)
                 d = JOINT_DIRECTION.get((leg, joint), 1)
                 motor.append(float(d * angles[i]))
         msg.data = motor
