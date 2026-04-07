@@ -1,0 +1,547 @@
+<?xml version="1.0" ?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="robotic_dog_urdf_8dof">
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_joint" type="fixed">
+      <origin xyz="0 0 0.001" rpy="0 0 0" />
+      <parent link="base_footprint"/>
+      <child link="base_link" />
+  </joint>
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.0324578171199918 -0.00107208054772986 -0.0532934197949659"
+        rpy="0 0 0" />
+      <mass
+        value="9.55580178099991" />
+      <inertia
+        ixx="0.028878887728372"
+        ixy="-5.32734038649637E-05"
+        ixz="-9.99548284777576E-05"
+        iyy="0.0328205453767607"
+        iyz="-2.0005331957631E-05"
+        izz="0.0484423164334583" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/base_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="leg1_upper_link">
+    <inertial>
+      <origin
+        xyz="-0.000328889665845748 0.0769193925083935 -0.0592310111145546"
+        rpy="0 0 0" />
+      <mass
+        value="0.637697073092139" />
+      <inertia
+        ixx="0.001682415664332"
+        ixy="-2.01178366091829E-08"
+        ixz="-8.0890527186563E-07"
+        iyy="0.00180888301272588"
+        iyz="-3.21012746181014E-05"
+        izz="0.000232658387311611" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg1_upper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg1_upper_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg1_upper_joint"
+    type="revolute">
+    <origin
+      xyz="0.324 0.116499322559436 -0.0669587516936535"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg1_upper_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.094"
+      upper="2.094"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg1_lower_link">
+    <inertial>
+      <origin
+        xyz="1.80716266513434E-06 0.000321216376702682 -0.122867335712219"
+        rpy="0 0 0" />
+      <mass
+        value="0.138600072096363" />
+      <inertia
+        ixx="0.000410120019152843"
+        ixy="4.54735361281021E-11"
+        ixz="2.11671521332614E-10"
+        iyy="0.000415065379224809"
+        iyz="-9.4884052073769E-07"
+        izz="1.7723509254257E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg1_lower_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg1_lower_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg1_lower_joint"
+    type="revolute">
+    <origin
+      xyz="0 0.101544682673132 -0.217746819542348"
+      rpy="0 0 0" />
+    <parent
+      link="leg1_upper_link" />
+    <child
+      link="leg1_lower_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.4"
+      upper="2.4"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg2_upper_link">
+    <inertial>
+      <origin
+        xyz="0.000127800307332776 -0.0766213988151565 -0.0599664662260584"
+        rpy="0 0 0" />
+      <mass
+        value="0.637697073092088" />
+      <inertia
+        ixx="0.00167741793065014"
+        ixy="-3.35293034128317E-09"
+        ixz="-2.13123778687523E-06"
+        iyy="0.00180852251444854"
+        iyz="3.99916830759616E-05"
+        izz="0.000238016619270677" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg2_upper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg2_upper_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg2_upper_joint"
+    type="revolute">
+    <origin
+      xyz="0.324 -0.116499949318977 -0.0675412498731288"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg2_upper_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.094"
+      upper="2.094"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg2_lower_link">
+    <inertial>
+      <origin
+        xyz="-1.80707555090878E-06 0.000293120445839512 -0.122867406862322"
+        rpy="0 0 0" />
+      <mass
+        value="0.138600070454872" />
+      <inertia
+        ixx="0.000410120014711362"
+        ixy="4.64383968889363E-11"
+        ixz="-2.11827782414142E-10"
+        iyy="0.000415045952434337"
+        iyz="2.9354653978298E-06"
+        izz="1.7742930568453E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg2_lower_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg2_lower_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg2_lower_joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.100454686079827 -0.218251817964039"
+      rpy="0 0 0" />
+    <parent
+      link="leg2_upper_link" />
+    <child
+      link="leg2_lower_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.4"
+      upper="2.4"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg3_upper_link">
+    <inertial>
+      <origin
+        xyz="0.000213744423748441 -0.076771075071646 -0.0592143076585741"
+        rpy="0 0 0" />
+      <mass
+        value="0.63769707309038" />
+      <inertia
+        ixx="0.00167901538529498"
+        ixy="-1.44334103136461E-08"
+        ixz="2.95457124567797E-06"
+        iyy="0.0018087126560125"
+        iyz="3.60274341620652E-05"
+        izz="0.000236229023058977" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg3_upper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg3_upper_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg3_upper_joint"
+    type="revolute">
+    <origin
+      xyz="-0.324 -0.116500000882996 -0.0675000000006123"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg3_upper_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.094"
+      upper="2.094"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg3_lower_link">
+    <inertial>
+      <origin
+        xyz="-1.80751626877029E-06 -1.40505594015405E-05 -0.122867754922063"
+        rpy="0 0 0" />
+      <mass
+        value="0.138600071390485" />
+      <inertia
+        ixx="0.000410120015739175"
+        ixy="4.59990229103003E-11"
+        ixz="-2.12414780803217E-10"
+        iyy="0.000415058148288933"
+        iyz="1.94216353348255E-06"
+        izz="1.77307364574072E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg3_lower_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg3_lower_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg3_lower_joint"
+    type="revolute">
+    <origin
+      xyz="0 -0.101000000000619 -0.217999999999799"
+      rpy="0 0 0" />
+    <parent
+      link="leg3_upper_link" />
+    <child
+      link="leg3_lower_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.4"
+      upper="2.4"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg4_upper_link">
+    <inertial>
+      <origin
+        xyz="-9.75042667739068E-05 0.0767710750714986 -0.0597856696530003"
+        rpy="0 0 0" />
+      <mass
+        value="0.637697073090724" />
+      <inertia
+        ixx="0.00167704645928537"
+        ixy="-6.65327760560173E-09"
+        ixz="1.68413403388964E-06"
+        iyy="0.00180871265601245"
+        iyz="-3.60656754427788E-05"
+        izz="0.000238197949068602" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg4_upper_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg4_upper_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg4_upper_joint"
+    type="revolute">
+    <origin
+      xyz="-0.324 0.116499999117003 -0.0675000000009629"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="leg4_upper_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.094"
+      upper="2.094"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="leg4_lower_link">
+    <inertial>
+      <origin
+        xyz="1.80678219541264E-06 1.40454489447328E-05 -0.122867755442078"
+        rpy="0 0 0" />
+      <mass
+        value="0.138600070371376" />
+      <inertia
+        ixx="0.000410120013926268"
+        ixy="4.58923722545058E-11"
+        ixz="2.10488295534875E-10"
+        iyy="0.000415058145505495"
+        iyz="-1.94219086793343E-06"
+        izz="1.77307368033845E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg4_lower_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://robotic_dog_urdf_8dof/meshes/leg4_lower_link_collisional.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leg4_lower_joint"
+    type="revolute">
+    <origin
+      xyz="0 0.101 -0.218"
+      rpy="0 0 0" />
+    <parent
+      link="leg4_upper_link" />
+    <child
+      link="leg4_lower_link" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-2.4"
+      upper="2.4"
+      effort="8"
+      velocity="4.19" />
+  </joint>
+  <link
+    name="lidar_link">
+  </link>
+  <joint
+    name="lidar_joint"
+    type="fixed">
+    <origin
+      xyz="0.284282580961245 9.01880488845888E-05 0.0962574459982149"
+      rpy="0 0.1745 0" />
+      <!-- 10 degrees pitch, differs from visual model -->
+    <parent
+      link="base_link" />
+    <child
+      link="lidar_link" />
+  </joint>
+  <link
+    name="camera_link">
+  </link>
+  <joint
+    name="camera_joint"
+    type="fixed">
+    <origin
+      xyz="0.352482816608291 0.000734336789502524 -0.0246227904334168"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="camera_link" />
+  </joint>
+</robot>
