@@ -12,8 +12,8 @@ In sim mode this node replaces the Teensy:
 
 Subscriptions:
   /joint_angles         (std_msgs/Float32MultiArray[8])   from gait_node (8DOF, no hips)
-  /joint_states         (sensor_msgs/JointState)          from joint_state_broadcaster
   /imu/data             (sensor_msgs/Imu)                 from Gazebo IMU sensor
+  /sim_reset            (std_msgs/Empty)                   from keyboard_node
   /odom                 (nav_msgs/Odometry)                from Gazebo OdometryPublisher
                                                            (only active in autonomous mode)
 

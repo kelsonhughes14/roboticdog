@@ -55,13 +55,13 @@ class GaitType(Enum):
 MAX_SPEED_MS = 1.5        # m/s
 
 # ── Swing duration — constant per biology (Maes et al. 2008) ──────────────────
-# Trot/gallop: 0.25 s  |  Walk: 0.35 s  |  Crawl: 0.40 s  |  Turtle: 0.50 s
+# Trot/gallop: 0.25 s  |  Walk: 0.35 s  |  Crawl: 0.40 s  |  Turtle: 0.80 s
 _T_SW = {
     GaitType.TROT:   0.25,
     GaitType.GALLOP: 0.25,
     GaitType.WALK:   0.35,
     GaitType.CRAWL:  0.40,
-    GaitType.TURTLE: 0.50,
+    GaitType.TURTLE: 1.20,   # slow deliberate swing
 }
 
 # ── Default stance duration for slow / stationary gaits ───────────────────────
@@ -70,7 +70,17 @@ _T_ST_SLOW = {
     GaitType.GALLOP: 0.40,
     GaitType.WALK:   0.50,
     GaitType.CRAWL:  0.60,
-    GaitType.TURTLE: 1.50,   # ~75% duty cycle — one foot off at a time
+    GaitType.TURTLE: 6.00,   # long stance — very slow cadence
+}
+
+# ── Per-gait top-speed fraction of MAX_SPEED_MS ───────────────────────────────
+# Turtle is capped well below the other gaits so full joystick stays slow.
+_SPEED_SCALE = {
+    GaitType.TROT:   1.00,
+    GaitType.GALLOP: 1.00,
+    GaitType.WALK:   0.60,
+    GaitType.CRAWL:  0.35,
+    GaitType.TURTLE: 0.06,   # max ~0.09 m/s at full stick
 }
 
 # ── Phase offsets ΔS_i relative to FR (leg 0) — Eq. (3.7) / (3.8) ────────────
@@ -265,7 +275,7 @@ class GaitGenerator:
             # formula must use the same scaled span so body speed stays correct.
             lat_frac = abs(vy) / v_mag   # fraction of motion that is lateral
             span_for_timing = self._l_span * (1.0 + lat_frac)
-            v_phys_mms = v_mag * MAX_SPEED_MS * 1000.0   # mm/s
+            v_phys_mms = v_mag * MAX_SPEED_MS * _SPEED_SCALE.get(self.gait_type, 1.0) * 1000.0   # mm/s
             t_st = max(2.0 * span_for_timing / v_phys_mms, t_sw * 0.5)
             # Backward motion needs longer stance to prevent tipping
             if vx < 0.0:

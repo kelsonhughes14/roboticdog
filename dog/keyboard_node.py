@@ -4,6 +4,7 @@ keyboard_node.py
 Keyboard teleoperation for the Dog robot.
 
 Publishes sensor_msgs/Joy to /joy_raw → controller_node → /joy → state_manager.
+Publishes std_msgs/Empty to /sim_reset to reset simulation.
 
 Controls
 --------

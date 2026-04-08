@@ -67,7 +67,7 @@ MAX_BODY_YAW   = 20.0
 # CAN_ID_MAP[leg_index][joint_index] = (can_bus, motor_id)
 #   leg:   0=FR, 1=FL, 2=RR, 3=RL
 #   joint: 1=shoulder, 2=knee  (hip removed — static dummy, 8DOF)
-#   can_bus: 1=CAN1 (front), 2=CAN2 (rear)
+#   can_bus: 1=CAN1 (front), 3=CAN3 (rear)
 CAN_ID_MAP = {
     # Front Right — CAN1
     (0, 1): (1, 0x79),  # FR Shoulder (121)
@@ -106,6 +106,11 @@ CAN_KD_MAX   =   5.0    # N·m·s/rad
 CAN_TRQ_MIN  = -18.0    # N·m
 CAN_TRQ_MAX  =  18.0    # N·m
 
+# Effective torque constant (motor Kt × gear ratio 36:1).
+# Measured: 2 N·m output at 0.5 A phase current during static stand.
+# Used to convert the MIT torque feedback (N·m) back to phase current (A).
+MOTOR_KT_EFF =  4.0     # N·m/A
+
 # Default impedance gains for position control
 CAN_KP_DEFAULT  = 150.0   # N·m/rad — stiff position hold
 CAN_KD_DEFAULT  =   2.0   # N·m·s/rad — light damping
@@ -131,10 +136,10 @@ JOINT_ANGLE_MAX =  2.618   #  150°
 #             Note: knee motor is belt-driven from the body — verify after shoulder is confirmed.
 # ─────────────────────────────────────────────
 JOINT_DIRECTION = {
-    (0, 1):  1, (0, 2):  1,   # FR shoulder, knee
-    (1, 1): -1, (1, 2): -1,   # FL shoulder, knee
-    (2, 1):  1, (2, 2):  1,   # RR shoulder, knee
-    (3, 1):  1, (3, 2):  1,   # RL shoulder, knee
+    (0, 1):  1, (0, 2):  1,   # FR shoulder, knee  (right leg)
+    (1, 1): -1, (1, 2): -1,   # FL shoulder, knee  (left leg — mirrored)
+    (2, 1):  1, (2, 2):  1,   # RR shoulder, knee  (right leg)
+    (3, 1): -1, (3, 2): -1,   # RL shoulder, knee  (left leg — mirrored)
 }
 
 # ─────────────────────────────────────────────

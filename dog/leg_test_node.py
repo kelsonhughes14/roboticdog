@@ -19,6 +19,7 @@ Commands:
 
 Published topics:
   /joint_angles  (std_msgs/Float32MultiArray)  — 12 motor commands in radians
+  /can_enable    (std_msgs/Bool)               — motor enable / disable
 """
 
 import re

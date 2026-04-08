@@ -16,6 +16,7 @@ Published topics:
            FL_sho, FL_kne,
            RR_sho, RR_kne,
            RL_sho, RL_kne
+  /joint_gains    (std_msgs/Float32MultiArray) — PD gains for the active gait
 """
 
 import rclpy
@@ -23,10 +24,16 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
 from geometry_msgs.msg import Twist, Vector3
 
-from dog.gait_generator import GaitGenerator, GaitType
+from dog.gait_generator import GaitGenerator, GaitType, default_foot_positions
 from dog.kinematics import compute_all_legs
 from dog.state_manager import RobotState
 from dog.robot_config import NEUTRAL_ANGLES
+
+_N_MOTORS = 8
+
+# Motor-frame angles for the neutral standing pose — used as the offset baseline.
+# Computed once at module load so _home_callback can subtract it directly.
+_NEUTRAL_MOTOR = compute_all_legs(default_foot_positions())
 
 
 CONTROL_RATE_HZ = 50
@@ -58,10 +65,15 @@ class GaitNode(Node):
         self.robot_state     = RobotState.SITTING
         self.walk_gait_type  = GaitType.TROT
 
-        self.create_subscription(Twist,  'gait_command', self._cmd_callback,       10)
-        self.create_subscription(Vector3,'body_pose',    self._pose_callback,      10)
-        self.create_subscription(String, 'robot_state',  self._state_callback,     10)
-        self.create_subscription(String, 'gait_type',    self._gait_type_callback, 10)
+        # Joint-space offset so gait trajectories are relative to the operator's
+        # physical standing position rather than the hardcoded NEUTRAL_ANGLES.
+        self._home_offset = [0.0] * _N_MOTORS
+
+        self.create_subscription(Twist,            'gait_command',  self._cmd_callback,       10)
+        self.create_subscription(Vector3,          'body_pose',     self._pose_callback,      10)
+        self.create_subscription(String,           'robot_state',   self._state_callback,     10)
+        self.create_subscription(String,           'gait_type',     self._gait_type_callback, 10)
+        self.create_subscription(Float32MultiArray,'standing_home', self._home_callback,      10)
 
         self.joint_pub = self.create_publisher(
             Float32MultiArray, 'joint_angles', 10
@@ -117,6 +129,24 @@ class GaitNode(Node):
             self._publish_gains(GaitType.STAND)
             self.vx = self.vy = self.yaw = 0.0
 
+    def _home_callback(self, msg: Float32MultiArray):
+        """Update the motor-frame offset between the neutral pose and the
+        operator-set physical standing position.
+
+        msg.data is motor-frame (JOINT_DIRECTION already applied by state_manager).
+        _NEUTRAL_MOTOR is also motor-frame, so the subtraction is frame-consistent.
+        """
+        if len(msg.data) < _N_MOTORS:
+            return
+        self._home_offset = [
+            float(msg.data[i]) - _NEUTRAL_MOTOR[i]
+            for i in range(_N_MOTORS)
+        ]
+        self.get_logger().info(
+            'Standing home updated — motor-frame offsets (rad): '
+            + '  '.join(f'{o:+.3f}' for o in self._home_offset)
+        )
+
     def _publish_gains(self, gait_type: GaitType):
         kp, kd = _GAIT_GAINS.get(gait_type, (35.0, 1.5))
         msg = Float32MultiArray()
@@ -151,6 +181,11 @@ class GaitNode(Node):
         except Exception as e:
             self.get_logger().error(f'IK failed: {e}')
             angles = list(NEUTRAL_ANGLES)
+
+        # Shift all angles by the operator's physical standing offset so the
+        # gait trajectories are centred on the real standing position, not the
+        # hardcoded NEUTRAL_ANGLES.
+        angles = [a + o for a, o in zip(angles, self._home_offset)]
 
         msg = Float32MultiArray()
         msg.data = [float(a) for a in angles]

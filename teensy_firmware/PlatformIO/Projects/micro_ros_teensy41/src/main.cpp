@@ -213,7 +213,7 @@ static bool  motors_enabled = false;
 // Latest motor feedback — updated whenever a response frame arrives
 static float fb_pos[8]  = {0.0f};  // rad
 static float fb_vel[8]  = {0.0f};  // rad/s
-static float fb_cur[8]  = {0.0f};  // A (proportional to torque)
+static float fb_cur[8]  = {0.0f};  // N·m (decoded with MIT_T_MAX = 18 N·m)
 static float fb_temp[8] = {0.0f};  // °C  (raw byte - 40)
 
 // ── Per-motor safety state ────────────────────────────────────────────────────
@@ -354,6 +354,9 @@ static void motor_send_mit(uint8_t bus, uint8_t motor_id,
 
     can_send_std(bus, motor_id, d, 8);
 }
+
+// Forward declaration — defined after publish_fault()
+static void trigger_fault(int idx);
 
 // Decode a MIT response frame into motor index feedback arrays.
 // Returns true if the frame belonged to a known motor.
