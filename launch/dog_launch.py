@@ -440,6 +440,19 @@ def generate_launch_description():
         output='screen',
     )
 
+    imu_leveling_node = Node(
+        package='dog',
+        executable='imu_leveling_node',
+        name='imu_leveling',
+        parameters=[{
+            'alpha':        0.10,   # EMA smoothing — lower = slower/smoother
+            'max_angle':   10.0,   # max correction in degrees
+            'invert_roll':  False,  # flip if roll reads backwards
+            'invert_pitch': False,  # flip if pitch reads backwards
+        }],
+        output='screen',
+    )
+
     return LaunchDescription([
         serial_port_arg,
         lidar_port_arg,
@@ -457,5 +470,6 @@ def generate_launch_description():
         controller_node,
         state_manager,
         gait_node,
+        imu_leveling_node,
         torque_monitor_node,
     ])

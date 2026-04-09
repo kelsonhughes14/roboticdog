@@ -35,6 +35,7 @@ from enum import Enum, auto
 
 from dog.robot_config import (
     STAND_HEIGHT, STEP_HEIGHT, STEP_LENGTH,
+    BODY_LENGTH, BODY_WIDTH,
 )
 
 # ── Leg indices ────────────────────────────────────────────────────────────────
@@ -239,7 +240,8 @@ class GaitGenerator:
             self.foot_pos = default_foot_positions()
 
     def update(self, vx: float, vy: float, yaw: float,
-               body_roll: float = 0.0, body_pitch: float = 0.0
+               body_roll: float = 0.0, body_pitch: float = 0.0,
+               level_pitch: float = 0.0, level_roll: float = 0.0,
                ) -> list[tuple[float, float, float]]:
         """
         Compute desired foot-end positions for the current control cycle.
@@ -260,7 +262,8 @@ class GaitGenerator:
         self._last_time = now
 
         if self.gait_type == GaitType.STAND:
-            return self._stand_pose(body_roll, body_pitch)
+            positions = self._stand_pose(body_roll, body_pitch)
+            return self._apply_level_correction(positions, level_pitch, level_roll)
 
         if self.gait_type not in _PHASE_OFFSETS:
             return default_foot_positions()
@@ -298,7 +301,8 @@ class GaitGenerator:
             )
             positions.append(pos)
 
-        return self._apply_body_pose(positions, body_roll, body_pitch)
+        positions = self._apply_body_pose(positions, body_roll, body_pitch)
+        return self._apply_level_correction(positions, level_pitch, level_roll)
 
     # ── Gait pattern modulator ────────────────────────────────────────────────
 
@@ -414,6 +418,46 @@ class GaitGenerator:
         foot_y = bx * _LEG_SIDE[leg] * dir_y
 
         return foot_x, foot_y, bz
+
+    # ── IMU body leveling ─────────────────────────────────────────────────────
+
+    def _apply_level_correction(self, positions: list,
+                                pitch_deg: float, roll_deg: float
+                                ) -> list[tuple[float, float, float]]:
+        """Adjust foot-z per leg so the body stays horizontal.
+
+        Uses the body-frame hip position of each leg — not the foot's
+        hip-frame position — so the correction is correct at both
+        neutral stand (foot_x = 0) and during gait (foot_x != 0).
+
+        Sign convention (body leveling, not ground-following):
+          pitch > 0 → nose up  → shorten front legs, extend rear legs
+          roll  > 0 → right up → shorten right legs, extend left legs
+
+          dz = -(hip_x[i]·sin(pitch) + hip_y[i]·sin(roll))
+
+        Leg order: [FR, FL, RR, RL]
+          hip_x: front = +BODY_LENGTH/2, rear = -BODY_LENGTH/2
+          hip_y: right = +BODY_WIDTH/2,  left = -BODY_WIDTH/2
+        """
+        if abs(pitch_deg) < 0.05 and abs(roll_deg) < 0.05:
+            return positions
+
+        p = math.radians(pitch_deg)
+        r = math.radians(roll_deg)
+
+        half_len = BODY_LENGTH / 2.0
+        half_wid = BODY_WIDTH  / 2.0
+
+        # Body-frame hip positions for each leg [FR, FL, RR, RL]
+        hip_x = [ half_len,  half_len, -half_len, -half_len]
+        hip_y = [ half_wid, -half_wid,  half_wid, -half_wid]
+
+        out = []
+        for i, (x, y, z) in enumerate(positions):
+            dz = -(hip_x[i] * math.sin(p) + hip_y[i] * math.sin(r))
+            out.append((x, y, z + dz))
+        return out
 
     # ── Body pose adjustment ──────────────────────────────────────────────────
 

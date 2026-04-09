@@ -4,33 +4,41 @@ keyboard_node.py
 Keyboard teleoperation for the Dog robot.
 
 Publishes sensor_msgs/Joy to /joy_raw → controller_node → /joy → state_manager.
-Publishes std_msgs/Empty to /sim_reset to reset simulation.
+Subscribes to /robot_state to show context-sensitive help and live state display.
 
-Controls
---------
+Controls — ESTOP (default at startup)
+--------------------------------------
+  Enter         Clear E-stop → enter POSITIONING
+  Backspace     E-stop (from any state)
+
+Controls — POSITIONING (after pressing Enter from E-stop)
+----------------------------------------------------------
+  1             Capture FR (front-right) leg
+  2             Capture FL (front-left)  leg
+  3             Capture RR (rear-right)  leg
+  4             Capture RL (rear-left)   leg
+  Enter         Confirm all legs and stand up
+
+Controls — STANDING / WALKING
+-------------------------------
   w / s         Forward / backward
   a / d         Strafe left / right
   q / e         Turn left / right
-  SPACE         Sit <-> Stand         (BTN_A)
-  Backspace     E-stop                (BTN_BACK)
-  Enter         Clear E-stop          (BTN_START)
-  f             Self-right            (BTN_B, from E-stop only)
-  g             Cycle gait            (BTN_X)
-  y             Toggle autonomous     (BTN_Y)
-  j             Jump forward          (BTN_B, when standing/walking)
-  b             Backflip              (BTN_B + BTN_RB)
-  r             Reset sim             (sim mode only)
-  W/S/A/D/Q/E   Turbo speed (RB held)
-  Ctrl+C        Quit
+  W/S/A/D/Q/E   Turbo speed (uppercase)
+  SPACE         Sit <-> Stand
+  g             Cycle gait
+  y             Toggle autonomous mode
+  j             Jump forward
+  b             Backflip
+  Backspace     E-stop
 
-Note: f and j both send BTN_B — state_manager decides the action:
-  ESTOP state    → self-right
-  STANDING/WALKING → jump forward
+Other
+-----
+  r             Reset sim (sim mode only)
+  Ctrl+C        Quit
 
 Run in a dedicated terminal (controller_node must be running):
   ros2 run dog keyboard_node
-
-Do NOT run joy_node at the same time.
 """
 
 import curses
@@ -40,12 +48,13 @@ import time
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Empty
+from std_msgs.msg import Empty, String
 
 from dog.robot_config import (
     BTN_A, BTN_B, BTN_BACK, BTN_START, BTN_LB, BTN_RB, BTN_X, BTN_Y,
     AXIS_LEFT_X, AXIS_LEFT_Y, AXIS_RIGHT_X,
 )
+from dog.state_manager import RobotState
 
 PUBLISH_HZ  = 20
 KEY_TIMEOUT = 0.15
@@ -56,16 +65,27 @@ class KeyboardNode(Node):
     def __init__(self):
         super().__init__('keyboard_node')
 
-        self._lock    = threading.Lock()
-        self._axes    = [0.0] * 8
-        self._buttons = [0]   * 11
-        self._running = True
+        self._lock        = threading.Lock()
+        self._axes        = [0.0] * 8
+        self._buttons     = [0]   * 11
+        self._running     = True
+        self._robot_state = RobotState.ESTOP
 
         self.joy_pub   = self.create_publisher(Joy,   'joy_raw',   10)
         self.reset_pub = self.create_publisher(Empty, 'sim_reset', 10)
+
+        self.create_subscription(String, 'robot_state', self._state_cb, 10)
         self.create_timer(1.0 / PUBLISH_HZ, self._publish)
 
-        self.get_logger().info('Keyboard node ready — terminal UI starting.')
+        self.get_logger().info('Keyboard node ready.')
+
+    def _state_cb(self, msg: String):
+        with self._lock:
+            self._robot_state = msg.data
+
+    def get_state(self) -> str:
+        with self._lock:
+            return self._robot_state
 
     def update(self, axes, buttons):
         with self._lock:
@@ -87,24 +107,90 @@ class KeyboardNode(Node):
         self._running = False
 
 
-_HELP = [
-    "Dog Robot  --  Keyboard Teleop",
+# ── Context-sensitive help blocks ─────────────────────────────────────────────
+
+_HELP_ESTOP = [
+    "  State: E-STOP",
+    "",
+    "  Enter       Clear E-stop → POSITIONING",
+    "  p           Cycle positioning target: SIT (default) ↔ STAND (captured = zero)",
+    "  Backspace   E-stop (already active)",
+    "",
+    "  Tip: press p to switch to STAND mode, then Enter to begin positioning.",
+]
+
+_HELP_POSITIONING = [
+    "  State: POSITIONING  — move legs by hand, then lock each one",
+    "",
+    "  1           Capture FR (front-right) leg",
+    "  2           Capture FL (front-left)  leg",
+    "  3           Capture RR (rear-right)  leg",
+    "  4           Capture RL (rear-left)   leg",
+    "  Enter       Confirm all legs and stand up",
+    "  Backspace   E-stop / abort",
+    "",
+    "  Lock all 4 legs before pressing Enter.",
+]
+
+_HELP_STANDING = [
+    "  State: STANDING",
+    "",
+    "  Hold movement key + deadman (auto) to walk:",
+    "  w / s       Forward / backward",
+    "  a / d       Strafe left / right",
+    "  q / e       Turn left / right",
+    "  W/A/S/D/Q/E Turbo (uppercase)",
+    "",
+    "  SPACE       Sit down",
+    "  g           Cycle gait",
+    "  y           Toggle autonomous mode",
+    "  j           Jump forward",
+    "  b           Backflip",
+    "  Backspace   E-stop",
+]
+
+_HELP_WALKING = [
+    "  State: WALKING",
     "",
     "  w / s       Forward / backward",
     "  a / d       Strafe left / right",
     "  q / e       Turn left / right",
-    "  SPACE       Sit <-> Stand",
-    "  Backspace   E-stop",
-    "  Enter       Clear E-stop",
-    "  f / j       Self-right (E-stop) / Jump forward (standing)",
-    "  g           Cycle gait",
-    "  y           Toggle autonomous mode",
-    "  b           Backflip",
-    "  r           Reset sim (sim mode only)",
-    "  W/A/S/D     Turbo (uppercase)",
-    "  Ctrl+C      Quit",
+    "  W/A/S/D/Q/E Turbo (uppercase)",
     "",
+    "  Release all keys to return to STANDING",
+    "  SPACE       Sit down",
+    "  g           Cycle gait",
+    "  Backspace   E-stop",
 ]
+
+_HELP_OTHER = [
+    "  State: {}",
+    "",
+    "  Backspace   E-stop",
+    "  r           Reset sim",
+]
+
+_HELP_FOOTER = [
+    "",
+    "  r           Reset sim (sim mode only)",
+    "  Ctrl+C      Quit",
+]
+
+
+def _help_for_state(state: str):
+    if state == RobotState.ESTOP:
+        return _HELP_ESTOP + _HELP_FOOTER
+    if state == RobotState.POSITIONING:
+        return _HELP_POSITIONING + _HELP_FOOTER
+    if state == RobotState.STANDING:
+        return _HELP_STANDING + _HELP_FOOTER
+    if state == RobotState.WALKING:
+        return _HELP_WALKING + _HELP_FOOTER
+    lines = [l.format(state) for l in _HELP_OTHER]
+    return lines + _HELP_FOOTER
+
+
+# ── Key sets ──────────────────────────────────────────────────────────────────
 
 _LOWER_MOVE = {ord(c) for c in 'wasdqe'}
 _UPPER_MOVE = {ord(c) for c in 'WASDQE'}
@@ -129,29 +215,47 @@ def _run_curses(stdscr, node: KeyboardNode):
             btn_last_fire[btn] = now
 
     while node._running:
-        key = stdscr.getch()
-        now = time.monotonic()
+        key   = stdscr.getch()
+        now   = time.monotonic()
+        state = node.get_state()
 
         if key != -1:
-            if key in _ALL_MOVE:
-                key_last[key] = now
-            elif key == ord(' '):
-                _oneshot(BTN_A)
-            elif key in (curses.KEY_BACKSPACE, 127, 8):
-                _oneshot(BTN_BACK)
-            elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
-                _oneshot(BTN_START)
-            elif key in (ord('f'), ord('j')):
-                _oneshot(BTN_B)              # self-right (ESTOP) or jump (standing)
-            elif key == ord('g'):
-                _oneshot(BTN_X)
-            elif key == ord('y'):
-                _oneshot(BTN_Y)              # toggle autonomous mode
-            elif key == ord('b'):
-                _oneshot(BTN_B)              # backflip = B + RB
-                _oneshot(BTN_RB)
-            elif key == ord('r'):
-                node.publish_reset()
+            if state == RobotState.POSITIONING:
+                # POSITIONING: number keys lock individual legs
+                if key == ord('1'):
+                    _oneshot(BTN_A)          # FR
+                elif key == ord('2'):
+                    _oneshot(BTN_B)          # FL
+                elif key == ord('3'):
+                    _oneshot(BTN_X)          # RR
+                elif key == ord('4'):
+                    _oneshot(BTN_Y)          # RL
+                elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+                    _oneshot(BTN_START)      # confirm + stand
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    _oneshot(BTN_BACK)       # abort → E-stop
+
+            else:
+                # All other states: standard mapping
+                if key in _ALL_MOVE:
+                    key_last[key] = now
+                elif key == ord(' '):
+                    _oneshot(BTN_A)          # sit / stand toggle
+                elif key in (curses.KEY_BACKSPACE, 127, 8):
+                    _oneshot(BTN_BACK)       # E-stop
+                elif key in (curses.KEY_ENTER, ord('\n'), ord('\r')):
+                    _oneshot(BTN_START)      # clear E-stop → POSITIONING
+                elif key == ord('j'):
+                    _oneshot(BTN_B)          # jump forward (standing/walking)
+                elif key == ord('g'):
+                    _oneshot(BTN_X)          # cycle gait
+                elif key == ord('y'):
+                    _oneshot(BTN_Y)          # toggle autonomous
+                elif key == ord('b'):
+                    _oneshot(BTN_B)          # backflip = B + RB
+                    _oneshot(BTN_RB)
+                elif key == ord('r'):
+                    node.publish_reset()
 
         held_lower = {chr(k) for k, t in key_last.items()
                       if k in _LOWER_MOVE and now - t < KEY_TIMEOUT}
@@ -161,9 +265,10 @@ def _run_curses(stdscr, node: KeyboardNode):
         turbo = bool(held_upper)
 
         axes = [0.0] * 8
-        axes[AXIS_LEFT_Y]  = (-1.0 if 'w' in held else 0.0) + (1.0 if 's' in held else 0.0)
-        axes[AXIS_LEFT_X]  = ( 1.0 if 'a' in held else 0.0) + (-1.0 if 'd' in held else 0.0)
-        axes[AXIS_RIGHT_X] = (-1.0 if 'q' in held else 0.0) + ( 1.0 if 'e' in held else 0.0)
+        if state not in (RobotState.POSITIONING, RobotState.ESTOP):
+            axes[AXIS_LEFT_Y]  = (-1.0 if 'w' in held else 0.0) + (1.0 if 's' in held else 0.0)
+            axes[AXIS_LEFT_X]  = ( 1.0 if 'a' in held else 0.0) + (-1.0 if 'd' in held else 0.0)
+            axes[AXIS_RIGHT_X] = (-1.0 if 'q' in held else 0.0) + ( 1.0 if 'e' in held else 0.0)
 
         buttons = [0] * 11
         buttons[BTN_LB] = 1 if held  else 0
@@ -175,22 +280,40 @@ def _run_curses(stdscr, node: KeyboardNode):
 
         node.update(axes, buttons)
 
+        # ── Draw UI ───────────────────────────────────────────────────────────
         stdscr.clear()
         h, w = stdscr.getmaxyx()
-        for i, line in enumerate(_HELP):
-            if i < h - 2:
-                try:
-                    stdscr.addstr(i, 0, line[:w - 1])
-                except curses.error:
-                    pass
-        status = f"  Active: {', '.join(sorted(held)) or 'none'}" \
-                 + ("  [TURBO]" if turbo else "")
+
+        title = "Dog Robot  —  Keyboard Teleop"
         try:
-            stdscr.addstr(len(_HELP), 0, status[:w - 1])
+            stdscr.addstr(0, 0, title[:w - 1], curses.A_BOLD)
         except curses.error:
             pass
-        stdscr.refresh()
 
+        help_lines = _help_for_state(state)
+        for i, line in enumerate(help_lines):
+            row = i + 2
+            if row >= h - 2:
+                break
+            try:
+                stdscr.addstr(row, 0, line[:w - 1])
+            except curses.error:
+                pass
+
+        if state in (RobotState.STANDING, RobotState.WALKING):
+            status = f"  Keys: {', '.join(sorted(held)) or 'none'}" \
+                     + ("  [TURBO]" if turbo else "")
+        elif state == RobotState.POSITIONING:
+            status = "  Move legs by hand, press 1/2/3/4 to lock, Enter to stand"
+        else:
+            status = f"  State: {state}"
+
+        try:
+            stdscr.addstr(h - 1, 0, status[:w - 1], curses.A_REVERSE)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
         time.sleep(0.02)
 
 

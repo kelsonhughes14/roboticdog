@@ -33,6 +33,7 @@ setup(
     entry_points={
         'console_scripts': [
             'imu_node          = dog.imu_node:main',
+            'imu_leveling_node = dog.imu_leveling_node:main',
             'gps_node          = dog.gps_node:main',
             'controller_node   = dog.controller_node:main',
             'gait_node         = dog.gait_node:main',

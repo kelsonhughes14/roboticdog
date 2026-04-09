@@ -28,23 +28,23 @@ Edit this file to match your physical build dimensions.
 # LEG SEGMENT LENGTHS  (millimetres)
 # Measure from pivot centre to pivot centre.
 # ─────────────────────────────────────────────
-HIP_LENGTH    = 130.0   # Distance from hip pivot to shoulder pivot (abduction link)
-UPPER_LENGTH  = 320.0   # Upper leg (femur) length
-LOWER_LENGTH  = 320.0   # Lower leg (tibia) length
+HIP_LENGTH    = 95.0   # Distance from hip pivot to shoulder pivot (abduction link)
+UPPER_LENGTH  = 240.0   # Upper leg (femur) length
+LOWER_LENGTH  = 230.0   # Lower leg (tibia) length
 
 # ─────────────────────────────────────────────
 # BODY DIMENSIONS  (millimetres)
 # ─────────────────────────────────────────────
-BODY_LENGTH = 430.0   # Front-to-rear hip separation (along X)
-BODY_WIDTH  = 150.0   # Left-to-right hip separation (along Y)
+BODY_LENGTH = 720.0   # Front-to-rear hip separation (along X)
+BODY_WIDTH  = 480.0   # Left-to-right hip separation (along Y)
 
 # ─────────────────────────────────────────────
 # DEFAULT STANCE
 # Mini Cheetah is fully symmetric — all four legs share the same stand height.
 # ─────────────────────────────────────────────
-STAND_HEIGHT  = 540.0   # Body height above ground (mm) — all four legs
+STAND_HEIGHT  = 350.0   # Body height above ground (mm) — all four legs
 STEP_HEIGHT   =  80.0   # Foot lift height per step (mm)
-STEP_LENGTH   = 150.0   # Foot travel distance per step (mm)
+STEP_LENGTH   = 130.0   # Foot travel distance per step (mm)
 STEP_DURATION =   0.3   # Seconds per half-cycle (~3.3 Hz trot cadence)
 
 # ─────────────────────────────────────────────
@@ -136,10 +136,10 @@ JOINT_ANGLE_MAX =  2.618   #  150°
 #             Note: knee motor is belt-driven from the body — verify after shoulder is confirmed.
 # ─────────────────────────────────────────────
 JOINT_DIRECTION = {
-    (0, 1):  1, (0, 2):  1,   # FR shoulder, knee  (right leg)
-    (1, 1): -1, (1, 2): -1,   # FL shoulder, knee  (left leg — mirrored)
-    (2, 1):  1, (2, 2):  1,   # RR shoulder, knee  (right leg)
-    (3, 1): -1, (3, 2): -1,   # RL shoulder, knee  (left leg — mirrored)
+    (0, 1):  1, (0, 2): -1,   # FR shoulder, knee  (right leg)
+    (1, 1): -1, (1, 2):  1,   # FL shoulder, knee  (left leg — mirrored)
+    (2, 1):  1, (2, 2): -1,   # RR shoulder, knee  (right leg)
+    (3, 1): -1, (3, 2):  1,   # RL shoulder, knee  (left leg — mirrored)
 }
 
 # ─────────────────────────────────────────────
@@ -160,21 +160,22 @@ JOINT_OFFSETS = {
 # Hip motors removed (8DOF) — only shoulder and knee.
 #
 # Belt-drive coupling: knee motor = shoulder_ik + knee_ik (body-frame knee).
-#   shoulder_ik = +35.02°, knee_ik = -70.04°, coupled = -35.02°
-#   (UPPER=320 mm, LOWER=320 mm, HIP=130 mm, STAND_HEIGHT=540 mm)
+#   shoulder_ik = +42.97°, knee_ik = -89.48°, coupled = -46.51°
+#   (UPPER=240 mm, LOWER=230 mm, HIP=95 mm, STAND_HEIGHT=350 mm)
+#   Physical knee angle ≈ 90° — right-angle stance
 # ─────────────────────────────────────────────
 NEUTRAL_ANGLES = [
-     0.6112, -0.6112,   # FR: shoulder, knee
-     0.6112, -0.6112,   # FL
-     0.6112, -0.6112,   # RR
-     0.6112, -0.6112,   # RL
+     0.7501, -0.8117,   # FR: shoulder, knee
+     0.7501, -0.8117,   # FL
+     0.7501, -0.8117,   # RR
+     0.7501, -0.8117,   # RL
 ]
 
 SIT_ANGLES = [
-     1.1346, -1.1346,   # FR: knee bent (forward-tuck sit)
-     1.1346, -1.1346,   # FL
-     1.1346, -1.1346,   # RR
-     1.1346, -1.1346,   # RL
+     1.1350, -1.2405,   # FR: knee bent (forward-tuck sit, foot_z≈200 mm)
+     1.1350, -1.2405,   # FL
+     1.1350, -1.2405,   # RR
+     1.1350, -1.2405,   # RL
 ]
 
 # Deep sit: shoulder tilts backward, knee bends moderately.
@@ -186,25 +187,6 @@ DEEP_SIT_ANGLES = [
     -0.6, -1.0,   # FL
     -0.6, -1.0,   # RR
     -0.6, -1.0,   # RL
-]
-
-# ─────────────────────────────────────────────
-# SELF-RIGHTING POSES  (motor frame, same convention as NEUTRAL_ANGLES)
-#
-# RIGHTING_TUCK_ANGLES — all legs folded tight against the body.
-#   Used at the start and end of the righting sequence to reduce
-#   rotational inertia and avoid ground obstruction.
-#
-# Righting push poses are built dynamically in state_manager based on
-# the IMU roll at the moment righting is triggered:
-#   push leg  : hip=+0.60 (full outward), shoulder/knee near-extended
-#   tuck leg  : hip=−0.30 (inward),       shoulder/knee tightly folded
-# ─────────────────────────────────────────────
-RIGHTING_TUCK_ANGLES = [
-     1.30, -1.1346,   # FR
-     1.30, -1.1346,   # FL
-     1.30, -1.1346,   # RR
-     1.30, -1.1346,   # RL
 ]
 
 # ─────────────────────────────────────────────

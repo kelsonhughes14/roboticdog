@@ -35,7 +35,8 @@
       "Bash(find /opt/ros/humble -path */ign_ros2_control* -name *.sdf -o -path */ign_ros2_control* -name *.urdf)",
       "Bash(find /opt/ros/humble/share/gz_ros2_control*)",
       "Bash(ign plugin:*)",
-      "Bash(python3 -c ':*)"
+      "Bash(python3 -c ':*)",
+      "Bash(ros2 pkg:*)"
     ]
   }
 }

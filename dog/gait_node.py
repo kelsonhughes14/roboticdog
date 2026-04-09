@@ -19,6 +19,8 @@ Published topics:
   /joint_gains    (std_msgs/Float32MultiArray) — PD gains for the active gait
 """
 
+import time
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray, String
@@ -36,7 +38,12 @@ _N_MOTORS = 8
 _NEUTRAL_MOTOR = compute_all_legs(default_foot_positions())
 
 
-CONTROL_RATE_HZ = 50
+CONTROL_RATE_HZ = 100
+
+# Seconds to smoothly blend from the standing position into the first gait cycle.
+# Prevents the jolt caused by the phase clock starting at 0 (some legs immediately
+# enter swing) and any mismatch between the standing pose and the gait's neutral.
+_TRANSITION_DURATION = 0.40
 
 # PD gains per gait.  Softer gains during dynamic gaits reduce impact loads on
 # the PLA frame and let the 36:1 motors swing freely without fighting themselves.
@@ -57,11 +64,13 @@ class GaitNode(Node):
         super().__init__('gait_node')
 
         self.gait       = GaitGenerator()
-        self.vx         = 0.0
-        self.vy         = 0.0
-        self.yaw        = 0.0
-        self.roll       = 0.0
-        self.pitch      = 0.0
+        self.vx           = 0.0
+        self.vy           = 0.0
+        self.yaw          = 0.0
+        self.roll         = 0.0
+        self.pitch        = 0.0
+        self._level_pitch = 0.0
+        self._level_roll  = 0.0
         self.robot_state     = RobotState.SITTING
         self.walk_gait_type  = GaitType.TROT
 
@@ -69,11 +78,20 @@ class GaitNode(Node):
         # physical standing position rather than the hardcoded NEUTRAL_ANGLES.
         self._home_offset = [0.0] * _N_MOTORS
 
-        self.create_subscription(Twist,            'gait_command',  self._cmd_callback,       10)
-        self.create_subscription(Vector3,          'body_pose',     self._pose_callback,      10)
-        self.create_subscription(String,           'robot_state',   self._state_callback,     10)
-        self.create_subscription(String,           'gait_type',     self._gait_type_callback, 10)
-        self.create_subscription(Float32MultiArray,'standing_home', self._home_callback,      10)
+        # Latest motor-frame feedback from Teensy — used to start the blend
+        # from wherever the legs actually are when walking begins.
+        self._fb_angles         = [0.0] * _N_MOTORS
+        self._transition_active = False
+        self._transition_start  = 0.0
+        self._transition_from   = [0.0] * _N_MOTORS
+
+        self.create_subscription(Twist,            'gait_command',    self._cmd_callback,       10)
+        self.create_subscription(Vector3,          'body_pose',       self._pose_callback,      10)
+        self.create_subscription(Vector3,          'level_correction',self._level_callback,     10)
+        self.create_subscription(String,           'robot_state',     self._state_callback,     10)
+        self.create_subscription(String,           'gait_type',       self._gait_type_callback, 10)
+        self.create_subscription(Float32MultiArray,'standing_home',   self._home_callback,      10)
+        self.create_subscription(Float32MultiArray,'/joint_states',   self._fb_callback,        10)
 
         self.joint_pub = self.create_publisher(
             Float32MultiArray, 'joint_angles', 10
@@ -96,6 +114,10 @@ class GaitNode(Node):
     def _pose_callback(self, msg: Vector3):
         self.roll  = msg.x
         self.pitch = msg.y
+
+    def _level_callback(self, msg: Vector3):
+        self._level_roll  = msg.x
+        self._level_pitch = msg.y
 
     def _gait_type_callback(self, msg: String):
         try:
@@ -122,12 +144,22 @@ class GaitNode(Node):
         elif new_state in (RobotState.WALKING, RobotState.AUTONOMOUS):
             self.gait.set_gait(self.walk_gait_type)
             self._publish_gains(self.walk_gait_type)
+            # Capture current leg positions so we can blend smoothly into the
+            # gait instead of jumping to phase=0 immediately.
+            self._transition_from   = list(self._fb_angles)
+            self._transition_start  = time.time()
+            self._transition_active = True
         elif new_state in (RobotState.SITTING, RobotState.ESTOP,
-                           RobotState.IDLE, RobotState.RIGHTING,
-                           RobotState.JUMPING, RobotState.BACKFLIP):
+                           RobotState.IDLE, RobotState.JUMPING,
+                           RobotState.BACKFLIP):
             self.gait.set_gait(GaitType.STAND)
             self._publish_gains(GaitType.STAND)
             self.vx = self.vy = self.yaw = 0.0
+
+    def _fb_callback(self, msg: Float32MultiArray):
+        """Track latest motor-frame positions from the Teensy for transition blending."""
+        if len(msg.data) >= _N_MOTORS:
+            self._fb_angles = list(msg.data[:_N_MOTORS])
 
     def _home_callback(self, msg: Float32MultiArray):
         """Update the motor-frame offset between the neutral pose and the
@@ -157,8 +189,7 @@ class GaitNode(Node):
     def _control_loop(self):
         if self.robot_state in (RobotState.POSITIONING, RobotState.SITTING,
                                 RobotState.ESTOP, RobotState.IDLE,
-                                RobotState.RIGHTING, RobotState.JUMPING,
-                                RobotState.BACKFLIP):
+                                RobotState.JUMPING, RobotState.BACKFLIP):
             return
 
         if self.robot_state == RobotState.STANDING:
@@ -171,6 +202,7 @@ class GaitNode(Node):
         foot_positions = self.gait.update(
             vx=self.vx, vy=self.vy, yaw=self.yaw,
             body_roll=self.roll, body_pitch=self.pitch,
+            level_pitch=self._level_pitch, level_roll=self._level_roll,
         )
 
         # Hip is static (8DOF): zero lateral offset so IK geometry is correct
@@ -186,6 +218,19 @@ class GaitNode(Node):
         # gait trajectories are centred on the real standing position, not the
         # hardcoded NEUTRAL_ANGLES.
         angles = [a + o for a, o in zip(angles, self._home_offset)]
+
+        # Blend from the pre-walk standing position into the live gait output.
+        # This eliminates the jolt at gait start caused by phase_clock=0 and
+        # the mismatch between the standing pose and the gait's first target.
+        if self._transition_active:
+            elapsed = time.time() - self._transition_start
+            if elapsed < _TRANSITION_DURATION:
+                t = elapsed / _TRANSITION_DURATION
+                t = t * t * (3.0 - 2.0 * t)   # smooth-step ease-in
+                angles = [f + (a - f) * t
+                          for f, a in zip(self._transition_from, angles)]
+            else:
+                self._transition_active = False
 
         msg = Float32MultiArray()
         msg.data = [float(a) for a in angles]

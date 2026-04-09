@@ -165,8 +165,9 @@ static float g_kd = DEFAULT_KD;
 #define CURRENT_CUTOFF_A    2.0f    // A   — instantaneous per-motor current cutoff
 #define CURRENT_CUTOFF_NM   (CURRENT_CUTOFF_A * KT_OUTPUT)  // 8.6 N·m
 #define TORQUE_CUTOFF_NM    14.0f   // N·m — sustained torque / stall cutoff
-#define STALL_TICKS         100     // ticks at 50 Hz ≈ 2 s sustained
-#define MAX_POS_STEP_RAD    0.20f   // rad per control tick (10 rad/s max)
+#define STALL_TICKS         200     // ticks at 100 Hz ≈ 2 s sustained
+#define CONTROL_RATE_HZ     100     // must match gait_node.py CONTROL_RATE_HZ
+#define MAX_POS_STEP_RAD    (10.0f / CONTROL_RATE_HZ)  // 10 rad/s ÷ Hz = rad/tick
 
 // ─────────────────────────────────────────────────────────────────────────────
 // BNO085 IMU
@@ -215,6 +216,16 @@ static float fb_pos[8]  = {0.0f};  // rad
 static float fb_vel[8]  = {0.0f};  // rad/s
 static float fb_cur[8]  = {0.0f};  // N·m (decoded with MIT_T_MAX = 18 N·m)
 static float fb_temp[8] = {0.0f};  // °C  (raw byte - 40)
+
+// ─────────────────────────────────────────────────────────────────────────────
+// COMMAND WATCHDOG
+// If motors are enabled but no /joint_angles arrives within this window,
+// exit motor mode automatically.  Covers abrupt launch kills, agent crashes,
+// and USB reconnect races where the LED would otherwise stay solid orange.
+// ─────────────────────────────────────────────────────────────────────────────
+#define CMD_WATCHDOG_MS  2000UL   // ms — 2 s without a command → safe exit
+
+static unsigned long last_cmd_ms = 0;   // millis() of last angles_callback
 
 // ── Per-motor safety state ────────────────────────────────────────────────────
 static bool    motor_faulted[8]     = {};  // true = motor removed from MIT mode
@@ -520,6 +531,7 @@ static void bno_poll() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 void angles_callback(const void *msg_in) {
+    last_cmd_ms = millis();   // feed the command watchdog
     const std_msgs__msg__Float32MultiArray *msg =
         (const std_msgs__msg__Float32MultiArray *)msg_in;
     if (msg->data.size != 8) return;
@@ -559,6 +571,7 @@ void enable_callback(const void *msg_in) {
         memset(last_sent_cmd,     0, sizeof(last_sent_cmd));
         all_motors_enter_mode();
         motors_enabled = true;
+        last_cmd_ms = millis();   // reset watchdog so it doesn't fire immediately
         publish_fault();   // publish 0x00 to confirm faults cleared
     } else {
         all_motors_exit_mode();
@@ -872,6 +885,7 @@ void loop() {
                     memset(last_sent_cmd,     0, sizeof(last_sent_cmd));
                     agent_state  = AGENT_CONNECTED;
                     last_ping_ms = millis();
+                    last_cmd_ms  = millis();   // reset watchdog on fresh connect
                     digitalWrite(LED_BUILTIN, HIGH);
                 }
             }
@@ -880,6 +894,16 @@ void loop() {
         case AGENT_CONNECTED:
             poll_can_rx();
             rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
+
+            // Command watchdog: if motors are active but no /joint_angles has
+            // arrived for CMD_WATCHDOG_MS, the Jetson nodes are gone (launch
+            // killed, node crashed, etc.).  Exit motor mode immediately so the
+            // motors don't hold position with no supervision.
+            if (motors_enabled && (millis() - last_cmd_ms) > CMD_WATCHDOG_MS) {
+                all_motors_exit_mode();
+                motors_enabled = false;
+            }
+
             if (millis() - last_ping_ms > 500) {
                 last_ping_ms = millis();
                 if (rmw_uros_ping_agent(100, 3) != RMW_RET_OK) {
