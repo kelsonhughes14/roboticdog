@@ -5,7 +5,7 @@ Physical constants and motor configuration for the Dog quadruped robot.
 
 Hardware:
   - CubeMars AK45-36 brushless actuators (CAN bus, MIT mini cheetah protocol)
-  - Teensy 4.1 running micro-ROS (CAN1 front legs, CAN2 rear legs)
+  - Teensy 4.1 running micro-ROS (CAN1 front legs, CAN3 rear legs)
   - Jetson Orin Nano running ROS2 Humble
   - mjbots power_dist r4.5b power distribution board
 
@@ -46,6 +46,21 @@ STAND_HEIGHT  = 350.0   # Body height above ground (mm) — all four legs
 STEP_HEIGHT   =  80.0   # Foot lift height per step (mm)
 STEP_LENGTH   = 130.0   # Foot travel distance per step (mm)
 STEP_DURATION =   0.3   # Seconds per half-cycle (~3.3 Hz trot cadence)
+
+# Gait geometry start angles (degrees, sagittal plane reference):
+#   upper: +down from forward horizontal (typically ~+45°)
+#   lower: +down from rearward horizontal (typically ~+45°, opposite x direction)
+# These are used by gait_node/gait_generator to derive the nominal stand Z used
+# by "constant-z" trajectory segments (stance ground level, shuffle ground level).
+GAIT_START_UPPER_ANGLE_DEG = 45.0
+GAIT_START_LOWER_ANGLE_DEG = 45.0
+
+# Shuffle lift joint-space trim (degrees, IK-space intent):
+# Applied only during SHUFFLE lift-up phase to help keep foot path vertical.
+#   upper: shoulder/upper-link delta during lift
+#   lower: knee/lower-link delta during lift
+SHUFFLE_LIFT_UPPER_TRIM_DEG = 0.0
+SHUFFLE_LIFT_LOWER_TRIM_DEG = 20.0
 
 # ─────────────────────────────────────────────
 # BODY POSE LIMITS  (degrees, used inside gait/state nodes)
@@ -136,10 +151,10 @@ JOINT_ANGLE_MAX =  2.618   #  150°
 #             Note: knee motor is belt-driven from the body — verify after shoulder is confirmed.
 # ─────────────────────────────────────────────
 JOINT_DIRECTION = {
-    (0, 1):  1, (0, 2): -1,   # FR shoulder, knee  (right leg)
-    (1, 1): -1, (1, 2):  1,   # FL shoulder, knee  (left leg — mirrored)
-    (2, 1):  1, (2, 2): -1,   # RR shoulder, knee  (right leg)
-    (3, 1): -1, (3, 2):  1,   # RL shoulder, knee  (left leg — mirrored)
+    (0, 1):  1, (0, 2): 1,   # FR shoulder, knee  (right leg)
+    (1, 1): -1, (1, 2):  -1,   # FL shoulder, knee  (left leg — mirrored)
+    (2, 1):  1, (2, 2): 1,   # RR shoulder, knee  (right leg)
+    (3, 1): -1, (3, 2):  -1,   # RL shoulder, knee  (left leg — mirrored)
 }
 
 # ─────────────────────────────────────────────
@@ -165,10 +180,10 @@ JOINT_OFFSETS = {
 #   Physical knee angle ≈ 90° — right-angle stance
 # ─────────────────────────────────────────────
 NEUTRAL_ANGLES = [
-     0.7501, -0.8117,   # FR: shoulder, knee
-     0.7501, -0.8117,   # FL
-     0.7501, -0.8117,   # RR
-     0.7501, -0.8117,   # RL
+     0.7501, 0.8117,   # FR: shoulder, knee
+     0.7501, 0.8117,   # FL
+     0.7501, 0.8117,   # RR
+     0.7501, 0.8117,   # RL
 ]
 
 SIT_ANGLES = [
@@ -190,13 +205,19 @@ DEEP_SIT_ANGLES = [
 ]
 
 # ─────────────────────────────────────────────
-# BNO085 9-DOF IMU  (connected directly to Jetson I2C)
+# BNO085 9-DOF IMU
+# In the current build the BNO085 is connected to the Teensy 4.1 (SDA=18, SCL=19).
+# The Teensy firmware reads it and publishes /imu/data and /imu/euler at 50 Hz.
+# The constants below are used only by the standalone imu_node.py (Jetson-direct variant).
 # ─────────────────────────────────────────────
 BNO085_ADDRESS   = 0x4A  # default; 0x4B if PS1 pin is pulled high
 IMU_PUBLISH_RATE = 50    # Hz
 
 # ─────────────────────────────────────────────
-# u-blox SAM-M10Q GPS  (connected to Jetson UART)
+# u-blox SAM-M10Q GPS
+# In the current build the GPS is connected to the Teensy 4.1 (Serial1, RX=0, TX=1).
+# The Teensy firmware reads NMEA and publishes /fix at 1 Hz.
+# The constants below are used only by the standalone gps_node.py (Jetson-direct variant).
 # ─────────────────────────────────────────────
 GPS_PORT      = '/dev/ttyUSB0'  # adjust to your port (ttyUSB0, ttyTHS0, ttyACM0…)
 GPS_BAUD_RATE = 9600            # SAM-M10Q factory default; raise after reconfiguring
@@ -217,14 +238,14 @@ AXIS_RT      = 5   # R2/RT analog trigger
 # ─────────────────────────────────────────────
 # XBOX CONTROLLER BUTTONS
 # ─────────────────────────────────────────────
-BTN_A        = 0   # Stand / sit toggle
-BTN_B        = 1   # Reserved
+BTN_A        = 0   # Standup recovery animation (press in STANDING/WALKING)
+BTN_B        = 1   # Jump forward (B alone); Backflip (B + RB)
 BTN_X        = 2   # Change gait
-BTN_Y        = 3   # Reserved
-BTN_LB       = 4   # Deadman enable
-BTN_RB       = 5   # Turbo speed
+BTN_Y        = 3   # Toggle autonomous mode on/off
+BTN_LB       = 4   # Deadman enable (hold while moving to walk)
+BTN_RB       = 5   # Turbo speed; Backflip modifier (hold while pressing B)
 BTN_BACK     = 6   # E-stop        (View button)
-BTN_START    = 7   # Reset E-stop  (Menu button)
+BTN_START    = 7   # Reset E-stop / POSITIONING confirm  (Menu button)
 
 # ─────────────────────────────────────────────
 # PS4 DUALSHOCK 4 BUTTONS
@@ -234,14 +255,14 @@ BTN_START    = 7   # Reset E-stop  (Menu button)
 #   4: L1         5: R1        6: L2(digital) 7: R2(digital)
 #   8: Share      9: Options   10: L3         11: R3  12: PS  13: Touchpad
 # ─────────────────────────────────────────────
-PS4_BTN_SQUARE  = 0   # Stand / sit toggle   (equivalent to Xbox A)
-PS4_BTN_CROSS   = 1   # Reserved             (equivalent to Xbox B)
-PS4_BTN_CIRCLE  = 2   # Change gait          (equivalent to Xbox X)
-PS4_BTN_TRI     = 3   # Reserved             (equivalent to Xbox Y)
-PS4_BTN_L1      = 4   # Deadman enable       (same index as Xbox LB)
-PS4_BTN_R1      = 5   # Turbo speed          (same index as Xbox RB)
-PS4_BTN_BACK    = 8   # E-stop               (Share button)
-PS4_BTN_START   = 9   # Reset E-stop         (Options button)
+PS4_BTN_SQUARE  = 0   # Standup recovery animation     (equivalent to Xbox A)
+PS4_BTN_CROSS   = 1   # Jump forward; Backflip (R1+Cross)  (equivalent to Xbox B)
+PS4_BTN_CIRCLE  = 2   # Change gait                    (equivalent to Xbox X)
+PS4_BTN_TRI     = 3   # Toggle autonomous mode on/off  (equivalent to Xbox Y)
+PS4_BTN_L1      = 4   # Deadman enable                 (same index as Xbox LB)
+PS4_BTN_R1      = 5   # Turbo speed; Backflip modifier (same index as Xbox RB)
+PS4_BTN_BACK    = 8   # E-stop                         (Share button)
+PS4_BTN_START   = 9   # Reset E-stop / POSITIONING confirm  (Options button)
 
 DEADMAN_BUTTON    = BTN_LB
 JOYSTICK_SCALE    = 0.7

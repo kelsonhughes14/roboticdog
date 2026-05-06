@@ -22,6 +22,9 @@
   <depend>joy</depend>
   <depend>teleop_twist_joy</depend>
 
+  <!-- Lidar driver (source-built — not available in apt for Humble) -->
+  <depend>urg_node2</depend>
+
   <!-- Autonomous navigation dependencies -->
   <depend>nav2_bringup</depend>
   <depend>nav2_bt_navigator</depend>

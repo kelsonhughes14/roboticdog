@@ -9,7 +9,7 @@
 #   max angular vel:  0.5 rad/s
 #
 # Localization: SLAM Toolbox (online_async) provides map→odom TF.
-# Odometry:     ZED 2 visual odometry provides odom→base_link TF.
+# Odometry:     provide odom→base_link TF on /odom from your lidar-based odometry/localization stack.
 # Obstacles:    Hokuyo UTM-30LX on /scan.
 
 bt_navigator:

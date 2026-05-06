@@ -5,12 +5,11 @@ Manages the high-level robot state machine.
 
 States
 ------
-  IDLE        Robot is powered but not initialised.
-  SITTING     All legs folded, safe resting position.
-  STANDING    Robot is up and holding still.
-  WALKING     Gait controller is active.
-  AUTONOMOUS  Nav2 autonomous navigation is active (cmd_vel from autonomous_bridge_node).
-  ESTOP       Emergency stop — all motors enter safe (torque-free) state.
+  POSITIONING  Motors torque-free; operator sets legs to neutral stance, locks per-leg, then confirms.
+  STANDING     Robot is up and holding still.
+  WALKING      Gait controller is active.
+  AUTONOMOUS   Nav2 autonomous navigation is active (cmd_vel from autonomous_bridge_node).
+  ESTOP        Emergency stop — all motors enter safe (torque-free) state.
 
 Subscribed topics:
   /joy                        (sensor_msgs/Joy)
@@ -40,17 +39,26 @@ from dog.robot_config import (
     AXIS_LT, AXIS_RT,
     JOYSTICK_SCALE, TURN_SCALE, TURBO_MULTIPLIER, JOYSTICK_DEADZONE,
     MAX_BODY_ROLL, MAX_BODY_PITCH, JOINT_DIRECTION,
-    NEUTRAL_ANGLES, SIT_ANGLES,
+    NEUTRAL_ANGLES,
     JUMP_CROUCH_ANGLES, JUMP_LAUNCH_ANGLES, JUMP_TUCK_ANGLES, JUMP_LAND_ANGLES,
     BACKFLIP_CROUCH_ANGLES, BACKFLIP_FRONT_LIFT_ANGLES, BACKFLIP_LAUNCH_ANGLES,
     BACKFLIP_TUCK_ANGLES, BACKFLIP_LAND_ANGLES,
 )
 from dog.gait_generator import GaitType
 
-_WALK_GAIT_CYCLE = [GaitType.TROT, GaitType.GALLOP, GaitType.WALK, GaitType.CRAWL, GaitType.TURTLE]
+_WALK_GAIT_CYCLE = [
+    GaitType.SHUFFLE,    # safest startup gait: one-leg-at-a-time, short stride
+    GaitType.CRAWL,
+    GaitType.WALK,
+    GaitType.DIAG_TROT,
+    GaitType.TROT,
+    GaitType.GALLOP,
+    GaitType.STEP,
+    GaitType.TURTLE,
+]
 
-_SIT_RAMP_DURATION          = 2.0   # seconds — time to ease into the sit position
-_STOP_RAMP_DURATION         = 0.40  # seconds — time to ease back to standing after walking
+_STOP_RAMP_DURATION         = 1.5   # seconds — time to ease back to standing after walking
+_POSITIONING_CONFIRM_RAMP_DURATION = 2.5  # seconds — smooth stand motion after 2nd Start
 
 # Three-phase stand-up durations
 _STANDUP_PHASE1_DURATION = 1.0   # lean: shoulders swing flush with body (forward lean)
@@ -63,12 +71,12 @@ _POSITIONING_KP = 0.0
 _POSITIONING_KD = 0.0
 _STANDING_KP    = 45.0
 _STANDING_KD    =  2.0
+_WALK_STOP_HOLD_S = 0.25  # require this long of no-walk command before leaving WALKING
 
 
 class RobotState:
     IDLE         = 'IDLE'
-    POSITIONING  = 'POSITIONING'   # motors off; operator manually positions legs, then presses Start
-    SITTING      = 'SITTING'
+    POSITIONING  = 'POSITIONING'   # motors torque-free; operator sets legs, locks per-leg, confirms
     STANDING     = 'STANDING'
     WALKING      = 'WALKING'
     AUTONOMOUS   = 'AUTONOMOUS'
@@ -104,30 +112,26 @@ class StateManagerNode(Node):
         self.prev_x         = 0
         self.prev_y         = 0
         self.prev_rb        = 0
-        self._positioning_target = 'sit'   # 'sit' or 'stand' — toggled by RB in ESTOP
         self._walk_gait_idx    = 0
         self._active_walk_gait = _WALK_GAIT_CYCLE[0]
+        self._walk_stop_pending_since = None
 
         # Jump / backflip state
         self._jump_start     = 0.0
         self._backflip_start = 0.0
 
-        # Ramps — smoothly interpolate between poses
-        self._current_angles       = [0.0] * 8   # last published angles (motor frame)
-        self._sit_ramp_start       = 0.0
-        self._sit_ramp_from        = [0.0] * 8
-
+        self._current_angles      = [0.0] * 8   # last published angles (IK frame)
         self._fb_pos              = [0.0] * 8   # latest motor-frame positions from Teensy
         self._fb_received         = False        # True once any /joint_states arrives
-        self._fb_last_time        = 0.0          # wall time of last /joint_states msg
-        self._fb_was_absent       = False        # True while no feedback for >3 s
         self._leg_captured        = [False] * 4  # FR, FL, RR, RL
         self._positioning_angles  = [0.0]  * 8  # captured IK-frame angles per leg
         self._standing_target     = list(NEUTRAL_ANGLES)  # updated on POSITIONING confirm
-        self._sit_target          = list(SIT_ANGLES)      # overridden by POSITIONING capture
         self._stop_ramp_start     = 0.0
         self._stop_ramp_from      = [0.0] * 8
         self._stop_ramp_active    = False
+        self._startup_ramp_active = False   # true only for auto-stand on 2nd Start
+        self._motors_enabled      = False   # tracks whether can_enable=True was sent
+        self._estop_resend_ticks  = 0       # countdown: re-send KP=0+disable after ESTOP
         self._standup_phase       = 0       # 0=inactive, 1=lean, 2=push, 3=normalize
         self._standup_phase_start = 0.0
         self._standup_phase_from  = [0.0] * 8
@@ -152,9 +156,11 @@ class StateManagerNode(Node):
 
         self.get_logger().info(
             'State manager ready. E-STOP active.\n'
-            '  Place robot down in natural sitting position, then press Start.\n'
-            '  A=capture FR  B=capture FL  X=capture RR  Y=capture RL\n'
-            '  Start (again) = confirm all legs and sit (A to stand up).'
+            '  1. Press Start → motors connect (torque-free, POSITIONING).\n'
+            '  2. Option A: calibrated-zero auto-stand: press Start again (no A/B/X/Y).\n'
+            '  3. Option B: manual capture: move legs to neutral and press A/B/X/Y, then Start.\n'
+            '  4. Set robot down. Hold LB + left stick to walk.\n'
+            '  (A in STANDING triggers the standup animation as a recovery move.)'
         )
         self._set_state(RobotState.ESTOP)
 
@@ -175,28 +181,38 @@ class StateManagerNode(Node):
             self._leg_captured       = [False] * 4
             self._positioning_angles = [0.0]  * 8
             self._fb_received        = False
-        elif new_state == RobotState.SITTING:
-            self._sit_ramp_from  = list(self._current_angles)
-            self._sit_ramp_start = time.time()
 
         if new_state == RobotState.ESTOP:
-            # Tell Teensy to exit motor mode → motors become torque-free
+            # Zero gains FIRST so the motor drive clears its cached KP/KD before
+            # we disable.  MIT-style motors hold their last-received gains internally;
+            # if we disable while KP is still high the drive keeps holding position
+            # indefinitely — even after the Teensy is physically disconnected.
+            # Send current position alongside KP=0 so there is no position error
+            # to act on if the disable message is briefly delayed.
+            self._publish_gains(0.0, 0.0)
+            self._publish_joint_angles(self._current_angles)
             msg = Bool()
             msg.data = False
             self.enable_pub.publish(msg)
+            self._motors_enabled = False
+            self._estop_resend_ticks = 20   # re-send disable for 200 ms in the tick
         elif new_state == RobotState.POSITIONING:
             # Enable MIT mode with zero gains — legs are completely torque-free
             # so the operator can move them freely, but CAN feedback is live.
             enable_msg = Bool()
             enable_msg.data = True
             self.enable_pub.publish(enable_msg)
+            self._motors_enabled = True
             self._publish_gains(_POSITIONING_KP, _POSITIONING_KD)
-        elif new_state in (RobotState.SITTING, RobotState.STANDING,
-                           RobotState.AUTONOMOUS):
-            # Re-enter motor mode with standing gains
-            msg = Bool()
-            msg.data = True
-            self.enable_pub.publish(msg)
+        elif new_state in (RobotState.STANDING, RobotState.AUTONOMOUS):
+            # Re-enter motor mode if needed (e.g. after ESTOP).
+            # If already enabled from POSITIONING, skip — republishing enable
+            # can cause the Teensy to jerk as it re-enters motor mode.
+            if not self._motors_enabled:
+                msg = Bool()
+                msg.data = True
+                self.enable_pub.publish(msg)
+                self._motors_enabled = True
 
     def _joy_callback(self, msg: Joy):
         if not msg.buttons or not msg.axes:
@@ -217,18 +233,10 @@ class StateManagerNode(Node):
         self.prev_back = back
 
         if self.state == RobotState.ESTOP:
-            if rb == 1 and self.prev_rb == 0:
-                self._positioning_target = 'stand' if self._positioning_target == 'sit' else 'sit'
-                self.get_logger().info(
-                    f'POSITIONING target → {self._positioning_target.upper()} '
-                    f'(RB to cycle; press Start to enter POSITIONING)'
-                )
             self.prev_rb = rb
             start = msg.buttons[self._btn_start] if self._btn_start < len(msg.buttons) else 0
             if start == 1 and self.prev_start == 0:
-                self.get_logger().info(
-                    f'E-STOP cleared — entering POSITIONING (target: {self._positioning_target.upper()}).'
-                )
+                self.get_logger().info('E-STOP cleared — entering POSITIONING.')
                 self._set_state(RobotState.POSITIONING)
             self.prev_start = start
             self.prev_b = b_btn
@@ -256,12 +264,30 @@ class StateManagerNode(Node):
             self.prev_start = start
             return
 
+        # Allow Start to always drop back into POSITIONING (torque-free)
+        # so the operator can recover from a stuck STANDING/WALKING state
+        # without relying on a separate E-STOP transition.
+        start = msg.buttons[self._btn_start] if self._btn_start < len(msg.buttons) else 0
+        if start == 1 and self.prev_start == 0:
+            if self.state in (RobotState.STANDING, RobotState.WALKING, RobotState.AUTONOMOUS):
+                self._exit_autonomous_if_needed()
+                self.gait_pub.publish(Twist())
+                self._cancel_front_stand_timer()
+                self._set_state(RobotState.POSITIONING)
+                self.prev_start = start
+                self.prev_b = b_btn
+                return
+        self.prev_start = start
+
         a = msg.buttons[self._btn_a] if self._btn_a < len(msg.buttons) else 0
         if a == 1 and self.prev_a == 0:
-            if self.state in (RobotState.IDLE, RobotState.SITTING):
-                # Phase 1: swing shoulders flush with body (π/2) while keeping
-                # geometric knee constant so feet stay planted.  This shifts
-                # weight forward off the knee joints before we push up.
+            if self.state in (RobotState.STANDING, RobotState.WALKING,
+                              RobotState.AUTONOMOUS):
+                # Trigger the standup animation from the current position.
+                # Useful as a recovery move if the robot has slumped or after
+                # landing from a jump.
+                self._exit_autonomous_if_needed()
+                self._cancel_front_stand_timer()
                 self._standup_phase       = 1
                 self._standup_phase_start = time.time()
                 self._standup_phase_from  = list(self._current_angles)
@@ -274,11 +300,6 @@ class StateManagerNode(Node):
                     p1_to[kne] = _STANDUP_FLUSH_ANGLE + geo_kne
                 self._standup_phase_to = p1_to
                 self._set_state(RobotState.STANDING)
-            elif self.state in (RobotState.STANDING, RobotState.WALKING,
-                                RobotState.AUTONOMOUS):
-                self._cancel_front_stand_timer()
-                self._exit_autonomous_if_needed()
-                self._set_state(RobotState.SITTING)
         self.prev_a = a
 
         # Y button: toggle AUTONOMOUS mode on/off.
@@ -328,7 +349,7 @@ class StateManagerNode(Node):
         def dz(v):
             return v if abs(v) > JOYSTICK_DEADZONE else 0.0
 
-        vx  = -dz(axis(AXIS_LEFT_Y))
+        vx  =  dz(axis(AXIS_LEFT_Y))
         vy  = -dz(axis(AXIS_LEFT_X))
         yaw = -dz(axis(AXIS_RIGHT_X))
 
@@ -341,6 +362,7 @@ class StateManagerNode(Node):
         moving = abs(vx) > 0 or abs(vy) > 0 or abs(yaw) > 0
 
         if lb and moving:
+            self._walk_stop_pending_since = None
             if self.state == RobotState.STANDING:
                 self._set_state(RobotState.WALKING)
                 self._publish_gait_type(self._active_walk_gait)
@@ -351,16 +373,28 @@ class StateManagerNode(Node):
             twist.angular.z = yaw * TURN_SCALE      * speed_mult
             self.gait_pub.publish(twist)
 
-        elif not moving and self.state == RobotState.WALKING:
-            self._set_state(RobotState.STANDING)
-            self.gait_pub.publish(Twist())
-            # Smoothly ramp back from current leg position to the confirmed
-            # standing position instead of snapping there instantly.
-            if self._fb_received:
-                self._stop_ramp_from   = self._to_motor_frame(list(self._fb_pos[:8]))
-                self._stop_ramp_start  = time.time()
-                self._stop_ramp_active = True
-                self._current_angles   = list(self._stop_ramp_from)
+        elif self.state == RobotState.WALKING:
+            # A brief command dropout (e.g., one missed Joy sample) should not
+            # instantly kick us out of walking.
+            now = time.time()
+            if self._walk_stop_pending_since is None:
+                self._walk_stop_pending_since = now
+            elif (now - self._walk_stop_pending_since) >= _WALK_STOP_HOLD_S:
+                # Joystick centered or LB released for long enough — stop
+                # walking and ramp back to standing.
+                self._walk_stop_pending_since = None
+                self._set_state(RobotState.STANDING)
+                self.gait_pub.publish(Twist())
+                # Smoothly ramp from the current leg position to the confirmed
+                # standing position instead of snapping there instantly.
+                if self._fb_received:
+                    self._stop_ramp_from   = self._to_motor_frame(list(self._fb_pos[:8]))
+                    self._stop_ramp_start  = time.time()
+                    self._stop_ramp_active = True
+                    self._startup_ramp_active = False
+                    self._current_angles   = list(self._stop_ramp_from)
+        else:
+            self._walk_stop_pending_since = None
 
         pose = Vector3()
         pose.x = body_roll
@@ -374,19 +408,6 @@ class StateManagerNode(Node):
         if len(msg.data) >= 8:
             self._fb_pos = list(msg.data[0:8])
             self._fb_received = True
-            now = time.time()
-            if self._fb_was_absent:
-                # Teensy just reconnected — re-enable motors if we're in an active state
-                self._fb_was_absent = False
-                if self.state in (RobotState.STANDING, RobotState.WALKING,
-                                  RobotState.SITTING, RobotState.AUTONOMOUS):
-                    self.get_logger().warn(
-                        'Teensy reconnected — re-enabling motors.'
-                    )
-                    msg_en = Bool()
-                    msg_en.data = True
-                    self.enable_pub.publish(msg_en)
-            self._fb_last_time = now
 
     def _capture_leg(self, leg: int):
         """Record the current physical position of one leg."""
@@ -408,43 +429,71 @@ class StateManagerNode(Node):
         )
 
     def _confirm_positioning(self):
-        """Capture any remaining free legs and transition based on _positioning_target."""
-        for leg in range(4):
-            if not self._leg_captured[leg]:
-                self._capture_leg(leg)
+        """Confirm POSITIONING and transition to STANDING.
 
-        self._publish_gains(_STANDING_KP, _STANDING_KD)
+        If no legs were explicitly captured with A/B/X/Y, assume motors were
+        properly zeroed in calibration and use NEUTRAL_ANGLES directly.
+        This supports the fast startup flow:
+          power-on in-air (legs vertical) -> Start -> Start -> auto-stand.
+        """
+        if not self._fb_received:
+            self.get_logger().warn('POSITIONING: no motor feedback yet — cannot confirm')
+            return
 
-        if self._positioning_target == 'stand':
-            # Captured position IS the standing zero — motors hold it in place now.
-            self.get_logger().info(
-                'POSITIONING complete (STAND mode) — captured angles are the standing zero.'
-            )
-            self._standing_target = list(self._positioning_angles)
-            self._sit_target      = list(SIT_ANGLES)
-            self._current_angles  = list(self._positioning_angles)
-            # Tell gait_node the standing home in motor frame (captured angles).
-            home_msg = Float32MultiArray()
-            home_msg.data = self._to_motor_frame(list(self._positioning_angles))
-            self.home_pub.publish(home_msg)
-            self._standup_phase   = 0   # already at target — no standup sequence needed
-            self._set_state(RobotState.STANDING)
+        if sum(self._leg_captured) == 0:
+            # Auto-stand path: ramp smoothly from current in-air pose to neutral
+            # instead of snapping directly on the second Start press.
+            current_ik = [0.0] * 8
+            for leg in range(4):
+                i = leg * 2
+                d_sho = JOINT_DIRECTION.get((leg, 1), 1)
+                d_kne = JOINT_DIRECTION.get((leg, 2), 1)
+                current_ik[i] = d_sho * self._fb_pos[i]
+                current_ik[i + 1] = d_kne * self._fb_pos[i + 1]
+
+            self._stop_ramp_from   = list(current_ik)
+            self._standing_target  = list(NEUTRAL_ANGLES)
+            self._current_angles   = list(current_ik)
+            self._stop_ramp_start  = time.time()
+            self._stop_ramp_active = True
+            self._startup_ramp_active = True
+            self._standup_phase   = 0
+            # Publish current pose while gains are still zero so the first
+            # high-gain sample matches where the legs already are.
             self._publish_joint_angles(self._current_angles)
-        else:
-            # Default: captured position is the sitting position.
-            self.get_logger().info('POSITIONING complete — transitioning to SITTING.')
-            self._sit_target      = list(self._positioning_angles)
-            self._standing_target = list(NEUTRAL_ANGLES)
-            # Tell gait_node the standing home in motor frame (NEUTRAL_ANGLES).
-            home_msg = Float32MultiArray()
-            home_msg.data = self._to_motor_frame(list(NEUTRAL_ANGLES))
-            self.home_pub.publish(home_msg)
-            self._set_state(RobotState.SITTING)
-            # Already at the sitting position — hold it.
-            self._publish_joint_angles(self._sit_target)
+            self._publish_gains(_STANDING_KP, _STANDING_KD)
+            self.get_logger().info(
+                'POSITIONING auto-confirm: no per-leg captures. '
+                'Ramping smoothly to calibrated NEUTRAL_ANGLES.'
+            )
+            self._set_state(RobotState.STANDING)
+            return
 
-        # Reset mode to default for next time.
-        self._positioning_target = 'sit'
+        # Always re-capture from live feedback to eliminate drift between button
+        # presses.  The individual A/B/X/Y captures are still logged for confirmation,
+        # but this ensures the commanded position exactly matches where the legs are now.
+        for leg in range(4):
+            self._capture_leg(leg)
+
+        self._standing_target = list(self._positioning_angles)
+        self._current_angles  = list(self._positioning_angles)
+        self._startup_ramp_active = False
+        self._standup_phase   = 0   # already at standing target
+
+        # Publish the target position while gains are still zero so the Teensy
+        # has the correct position cached before high gains arrive — prevents jerk.
+        self._publish_joint_angles(self._current_angles)
+
+        # Tell gait_node the standing home in motor frame.
+        home_msg = Float32MultiArray()
+        home_msg.data = self._to_motor_frame(list(self._positioning_angles))
+        self.home_pub.publish(home_msg)
+
+        # Now raise gains and enter STANDING.
+        self._publish_gains(_STANDING_KP, _STANDING_KD)
+        self.get_logger().info('POSITIONING complete — captured angles are the standing zero.')
+        self._set_state(RobotState.STANDING)
+        self._publish_joint_angles(self._current_angles)
 
     # ────────────────────────────────────────────────────────────────
     def _estop_callback(self, msg: Bool):
@@ -469,10 +518,15 @@ class StateManagerNode(Node):
 
     def _timed_actions_tick(self):
         """Phase sequencer called at 100 Hz for all timed motion states."""
-        # Detect when Teensy feedback goes silent (agent disconnected / watchdog fired)
-        if (self._fb_received and not self._fb_was_absent
-                and (time.time() - self._fb_last_time) > 3.0):
-            self._fb_was_absent = True
+        # Re-send KP=0 + disable for 200 ms after ESTOP in case a CAN message was
+        # dropped, and to out-race any late gain publish from other nodes.
+        if self._estop_resend_ticks > 0:
+            self._publish_gains(0.0, 0.0)
+            self._publish_joint_angles(self._current_angles)
+            disable_msg = Bool()
+            disable_msg.data = False
+            self.enable_pub.publish(disable_msg)
+            self._estop_resend_ticks -= 1
 
         if self.state == RobotState.POSITIONING:
             if not self._fb_received:
@@ -540,31 +594,22 @@ class StateManagerNode(Node):
                         self.home_pub.publish(home_msg)
             elif self._stop_ramp_active:
                 elapsed = time.time() - self._stop_ramp_start
-                if elapsed < _STOP_RAMP_DURATION:
-                    t = elapsed / _STOP_RAMP_DURATION
+                ramp_dur = _POSITIONING_CONFIRM_RAMP_DURATION if self._startup_ramp_active else _STOP_RAMP_DURATION
+                if elapsed < ramp_dur:
+                    t = elapsed / ramp_dur
                     t = t * t * (3.0 - 2.0 * t)   # smooth-step ease-in-out
                     angles = [a + (b - a) * t
                               for a, b in zip(self._stop_ramp_from, self._standing_target)]
                     self._publish_joint_angles(angles)
                 else:
                     self._stop_ramp_active = False
+                    self._startup_ramp_active = False
                     self._current_angles   = list(self._standing_target)
                     self._publish_joint_angles(self._current_angles)
             else:
                 # Keep sending current commanded angles so motors stay active.
                 # gait_node overrides this when walking.
                 self._publish_joint_angles(self._current_angles)
-        elif self.state == RobotState.SITTING:
-            elapsed = time.time() - self._sit_ramp_start
-            if elapsed < _SIT_RAMP_DURATION:
-                # Smooth-step ease-in-out: 3t² − 2t³
-                t = elapsed / _SIT_RAMP_DURATION
-                t = t * t * (3.0 - 2.0 * t)
-                angles = [a + (b - a) * t
-                          for a, b in zip(self._sit_ramp_from, self._sit_target)]
-                self._publish_joint_angles(angles)
-            else:
-                self._publish_joint_angles(self._sit_target)
         elif self.state == RobotState.JUMPING:
             self._jump_phase()
         elif self.state == RobotState.BACKFLIP:
@@ -647,19 +692,34 @@ class StateManagerNode(Node):
         """Switch to AUTONOMOUS: Nav2 / autonomous_bridge_node drives the robot."""
         self.get_logger().info(
             'Entering AUTONOMOUS mode — Nav2 is now in control. '
-            'Press Y again to return to manual, or A to sit down.'
+            'Press Y again to return to manual.'
         )
+        # Publish gait first so gait_node enters AUTONOMOUS already primed for
+        # shuffle (avoids a brief transition on the previously selected gait).
+        self._publish_gait_type(GaitType.SHUFFLE)
         self._set_state(RobotState.AUTONOMOUS)
-        # Force TROT gait so gait_node is ready to execute Nav2 velocities.
-        self._publish_gait_type(GaitType.TROT)
 
     def _exit_autonomous(self):
         """Return from AUTONOMOUS to manual STANDING."""
         self.get_logger().info('Exiting AUTONOMOUS mode — returning manual control.')
-        # Stop any ongoing motion before handing back to the operator.
+        # Stop locomotion, then smoothly return to the calibrated standing home
+        # captured during POSITIONING (self._standing_target).
         self.gait_pub.publish(Twist())
+        self._publish_gait_type(GaitType.STAND)
+        self._standup_phase = 0
+
+        # Start ramp from the latest measured leg pose when available.
+        if self._fb_received and len(self._fb_pos) >= 8:
+            self._stop_ramp_from = self._to_motor_frame(list(self._fb_pos[:8]))
+        else:
+            self._stop_ramp_from = list(self._current_angles)
+
+        self._current_angles = list(self._stop_ramp_from)
+        self._stop_ramp_start = time.time()
+        self._startup_ramp_active = False
+        self._stop_ramp_active = True
         self._set_state(RobotState.STANDING)
-        self._publish_joint_angles(NEUTRAL_ANGLES)
+        self._publish_joint_angles(self._current_angles)
 
     def _exit_autonomous_if_needed(self):
         """Call before any state transition that should implicitly leave AUTONOMOUS."""

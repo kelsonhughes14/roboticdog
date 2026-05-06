@@ -23,10 +23,10 @@ Autonomous mode (autonomous:=true, works with both sim and hardware):
   - slam_toolbox            (online async mapping, map->odom TF)
   - nav2 stack              (planner + controller + costmaps, publishes /cmd_vel)
   - rviz2                   (map, scan, paths, Nav2 goal panel)
+  - requires odom->base_link TF on /odom (from your odometry/localization source)
   Hardware only:
     - robot_state_publisher  (URDF TF for sensor frames)
     - urg_node2 / hokuyo     (/scan from physical Hokuyo UTM-30LX)
-    - zed_ros2_wrapper       (visual odometry + point cloud from ZED 2)
   Sim only:
     - ros_gz_bridge for /scan and /odom (from Gazebo lidar + odometry plugins)
 
@@ -38,6 +38,7 @@ Usage:
   ros2 launch dog dog_launch.py autonomous:=true                  # hardware + Nav2
   ros2 launch dog dog_launch.py sim:=true autonomous:=true        # Gazebo + Nav2
   ros2 launch dog dog_launch.py autonomous:=true lidar_port:=/dev/ttyACM1
+  ros2 launch dog dog_launch.py autonomous:=true fallback_odom_tf:=false
 """
 
 import os
@@ -47,16 +48,23 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    EmitEvent,
     ExecuteProcess,
     GroupAction,
     IncludeLaunchDescription,
+    RegisterEventHandler,
     TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
+from launch.event_handlers import OnProcessStart
+from launch.events import matches_action
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, LaunchConfiguration, PythonExpression
-from launch_ros.actions import Node
+from launch_ros.actions import LifecycleNode, Node
+from launch_ros.event_handlers import OnStateTransition
+from launch_ros.events.lifecycle import ChangeState
 from launch_ros.parameter_descriptions import ParameterValue
+from lifecycle_msgs.msg import Transition
 
 
 def generate_launch_description():
@@ -74,12 +82,12 @@ def generate_launch_description():
     # ── Launch arguments ──────────────────────────────────────────
     serial_port_arg = DeclareLaunchArgument(
         'serial_port',
-        default_value='/dev/ttyACM0',
+        default_value='/dev/ttyACM1',
         description='USB serial port for Teensy 4.1 (hardware mode only)',
     )
     lidar_port_arg = DeclareLaunchArgument(
         'lidar_port',
-        default_value='/dev/ttyACM1',
+        default_value='/dev/ttyACM0',
         description='USB serial port for Hokuyo UTM-30LX (hardware + autonomous only)',
     )
     ctrl_arg = DeclareLaunchArgument(
@@ -102,12 +110,21 @@ def generate_launch_description():
         default_value='false',
         description='Set true to launch Nav2 + SLAM Toolbox + sensor nodes',
     )
+    fallback_odom_tf_arg = DeclareLaunchArgument(
+        'fallback_odom_tf',
+        default_value='true',
+        description=(
+            'Hardware autonomous only: publish static odom->base_link when no odometry source exists. '
+            'Set false if an external odometry/localization node already publishes odom->base_link.'
+        ),
+    )
 
     serial_port = LaunchConfiguration('serial_port')
     lidar_port  = LaunchConfiguration('lidar_port')
     ctrl        = LaunchConfiguration('ctrl')
     sim         = LaunchConfiguration('sim')
     autonomous  = LaunchConfiguration('autonomous')
+    fallback_odom_tf = LaunchConfiguration('fallback_odom_tf')
     world       = LaunchConfiguration('world')
 
     robot_description_content = ParameterValue(
@@ -124,6 +141,9 @@ def generate_launch_description():
     ))
     is_sim_auto = IfCondition(PythonExpression(
         ["'", sim, "' == 'true'  and '", autonomous, "' == 'true'"]
+    ))
+    use_fallback_odom_tf = IfCondition(PythonExpression(
+        ["'", sim, "' == 'false' and '", autonomous, "' == 'true' and '", fallback_odom_tf, "' == 'true'"]
     ))
 
     # ═══════════════════════════════════════════════════════════════
@@ -277,6 +297,50 @@ def generate_launch_description():
     # Launches physical sensors and robot_state_publisher for TF.
     # ═══════════════════════════════════════════════════════════════
 
+    # ── Hokuyo UTM-30LX lifecycle node (defined here so event handlers can reference it) ──
+    hokuyo_node = LifecycleNode(
+        package='urg_node2',
+        executable='urg_node2_node',
+        name='hokuyo',
+        namespace='',
+        parameters=[{
+            'serial_port':       lidar_port,
+            'frame_id':          'lidar_link',
+            'angle_min':         -2.356,
+            'angle_max':          2.356,
+            'publish_intensity':  False,
+        }],
+        output='screen',
+    )
+
+    # Unconfigured → Inactive on process start
+    hokuyo_configure = RegisterEventHandler(
+        event_handler=OnProcessStart(
+            target_action=hokuyo_node,
+            on_start=[
+                EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=matches_action(hokuyo_node),
+                    transition_id=Transition.TRANSITION_CONFIGURE,
+                )),
+            ],
+        ),
+    )
+
+    # Inactive → Active once configure completes
+    hokuyo_activate = RegisterEventHandler(
+        event_handler=OnStateTransition(
+            target_lifecycle_node=hokuyo_node,
+            start_state='configuring',
+            goal_state='inactive',
+            entities=[
+                EmitEvent(event=ChangeState(
+                    lifecycle_node_matcher=matches_action(hokuyo_node),
+                    transition_id=Transition.TRANSITION_ACTIVATE,
+                )),
+            ],
+        ),
+    )
+
     hw_auto_group = GroupAction(
         condition=is_hw_auto,
         actions=[
@@ -290,37 +354,21 @@ def generate_launch_description():
                 output='screen',
             ),
 
-            # Hokuyo UTM-30LX — publishes /scan (LaserScan, 270° FOV, 30 m)
-            Node(
-                package='urg_node2',
-                executable='urg_node2_node',
-                name='hokuyo',
-                parameters=[{
-                    'serial_port':       lidar_port,
-                    'frame_id':          'lidar_link',
-                    'angle_min':         -2.356,
-                    'angle_max':          2.356,
-                    'publish_intensity':  False,
-                }],
-                output='screen',
-            ),
+            # Hokuyo UTM-30LX — lifecycle node, auto-activates on startup
+            hokuyo_node,
+            hokuyo_configure,
+            hokuyo_activate,
 
-            # ZED 2 — publishes /odom (visual odometry, odom→base_link TF) + point cloud
-            # Requires zed_ros2_wrapper: https://github.com/stereolabs/zed-ros2-wrapper
+            # Fallback for hardware setups without a live odometry source.
+            # This prevents Nav2/SLAM message_filters from dropping /scan
+            # due to missing odom->base_link TF at startup.
             Node(
-                package='zed_ros2_wrapper',
-                executable='zed_wrapper',
-                name='zed2',
-                parameters=[{
-                    'camera_model':   'zed2',
-                    'camera_name':    'zed2',
-                    'base_frame':     'base_link',
-                    'odom_frame':     'odom',
-                    'publish_tf':     True,
-                    'publish_map_tf': False,   # SLAM Toolbox publishes map→odom
-                    'grab_frame_rate': 15,
-                }],
+                package='tf2_ros',
+                executable='static_transform_publisher',
+                name='fallback_odom_tf_pub',
+                arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_link'],
                 output='screen',
+                condition=use_fallback_odom_tf,
             ),
         ],
     )
@@ -460,6 +508,7 @@ def generate_launch_description():
         sim_arg,
         world_arg,
         autonomous_arg,
+        fallback_odom_tf_arg,
         micro_ros_agent,
         sim_group,
         sim_auto_group,

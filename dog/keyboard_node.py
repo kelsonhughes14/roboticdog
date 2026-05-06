@@ -25,7 +25,7 @@ Controls — STANDING / WALKING
   a / d         Strafe left / right
   q / e         Turn left / right
   W/S/A/D/Q/E   Turbo speed (uppercase)
-  SPACE         Sit <-> Stand
+  SPACE         Standup recovery animation
   g             Cycle gait
   y             Toggle autonomous mode
   j             Jump forward
@@ -54,10 +54,21 @@ from dog.robot_config import (
     BTN_A, BTN_B, BTN_BACK, BTN_START, BTN_LB, BTN_RB, BTN_X, BTN_Y,
     AXIS_LEFT_X, AXIS_LEFT_Y, AXIS_RIGHT_X,
 )
+from dog.gait_generator import GaitType
 from dog.state_manager import RobotState
 
 PUBLISH_HZ  = 20
 KEY_TIMEOUT = 0.15
+_WALK_GAIT_CYCLE = [
+    GaitType.SHUFFLE.name,
+    GaitType.CRAWL.name,
+    GaitType.WALK.name,
+    GaitType.DIAG_TROT.name,
+    GaitType.TROT.name,
+    GaitType.GALLOP.name,
+    GaitType.STEP.name,
+    GaitType.TURTLE.name,
+]
 
 
 class KeyboardNode(Node):
@@ -70,11 +81,13 @@ class KeyboardNode(Node):
         self._buttons     = [0]   * 11
         self._running     = True
         self._robot_state = RobotState.ESTOP
+        self._gait_type   = GaitType.SHUFFLE.name
 
         self.joy_pub   = self.create_publisher(Joy,   'joy_raw',   10)
         self.reset_pub = self.create_publisher(Empty, 'sim_reset', 10)
 
         self.create_subscription(String, 'robot_state', self._state_cb, 10)
+        self.create_subscription(String, 'gait_type', self._gait_cb, 10)
         self.create_timer(1.0 / PUBLISH_HZ, self._publish)
 
         self.get_logger().info('Keyboard node ready.')
@@ -86,6 +99,14 @@ class KeyboardNode(Node):
     def get_state(self) -> str:
         with self._lock:
             return self._robot_state
+
+    def _gait_cb(self, msg: String):
+        with self._lock:
+            self._gait_type = msg.data
+
+    def get_gait_type(self) -> str:
+        with self._lock:
+            return self._gait_type
 
     def update(self, axes, buttons):
         with self._lock:
@@ -113,10 +134,7 @@ _HELP_ESTOP = [
     "  State: E-STOP",
     "",
     "  Enter       Clear E-stop → POSITIONING",
-    "  p           Cycle positioning target: SIT (default) ↔ STAND (captured = zero)",
     "  Backspace   E-stop (already active)",
-    "",
-    "  Tip: press p to switch to STAND mode, then Enter to begin positioning.",
 ]
 
 _HELP_POSITIONING = [
@@ -141,8 +159,9 @@ _HELP_STANDING = [
     "  q / e       Turn left / right",
     "  W/A/S/D/Q/E Turbo (uppercase)",
     "",
-    "  SPACE       Sit down",
+    "  SPACE       Standup recovery animation",
     "  g           Cycle gait",
+    "  h           Switch to SHUFFLE gait",
     "  y           Toggle autonomous mode",
     "  j           Jump forward",
     "  b           Backflip",
@@ -158,8 +177,9 @@ _HELP_WALKING = [
     "  W/A/S/D/Q/E Turbo (uppercase)",
     "",
     "  Release all keys to return to STANDING",
-    "  SPACE       Sit down",
+    "  SPACE       Standup recovery animation",
     "  g           Cycle gait",
+    "  h           Switch to SHUFFLE gait",
     "  Backspace   E-stop",
 ]
 
@@ -206,8 +226,11 @@ def _run_curses(stdscr, node: KeyboardNode):
     key_last      = {}
     btn_until     = {}
     btn_last_fire = {}
+    gait_cycle_until_shuffle = 0
+    gait_last_cycle_time = 0.0
 
     ONESHOT_COOLDOWN = 0.5
+    SHUFFLE_PULSE_GAP = 0.2
 
     def _oneshot(btn):
         if now - btn_last_fire.get(btn, 0) > ONESHOT_COOLDOWN:
@@ -249,6 +272,13 @@ def _run_curses(stdscr, node: KeyboardNode):
                     _oneshot(BTN_B)          # jump forward (standing/walking)
                 elif key == ord('g'):
                     _oneshot(BTN_X)          # cycle gait
+                elif key == ord('h'):
+                    gait = node.get_gait_type()
+                    if gait in _WALK_GAIT_CYCLE:
+                        idx = _WALK_GAIT_CYCLE.index(gait)
+                        gait_cycle_until_shuffle = idx
+                    else:
+                        gait_cycle_until_shuffle = 0
                 elif key == ord('y'):
                     _oneshot(BTN_Y)          # toggle autonomous
                 elif key == ord('b'):
@@ -256,6 +286,11 @@ def _run_curses(stdscr, node: KeyboardNode):
                     _oneshot(BTN_RB)
                 elif key == ord('r'):
                     node.publish_reset()
+
+        if gait_cycle_until_shuffle > 0 and now - gait_last_cycle_time >= SHUFFLE_PULSE_GAP:
+            btn_until[BTN_X] = now + 0.08
+            gait_last_cycle_time = now
+            gait_cycle_until_shuffle -= 1
 
         held_lower = {chr(k) for k, t in key_last.items()
                       if k in _LOWER_MOVE and now - t < KEY_TIMEOUT}
@@ -301,8 +336,10 @@ def _run_curses(stdscr, node: KeyboardNode):
                 pass
 
         if state in (RobotState.STANDING, RobotState.WALKING):
-            status = f"  Keys: {', '.join(sorted(held)) or 'none'}" \
-                     + ("  [TURBO]" if turbo else "")
+            status = (
+                f"  Gait: {node.get_gait_type()}  |  Keys: {', '.join(sorted(held)) or 'none'}"
+                + ("  [TURBO]" if turbo else "")
+            )
         elif state == RobotState.POSITIONING:
             status = "  Move legs by hand, press 1/2/3/4 to lock, Enter to stand"
         else:

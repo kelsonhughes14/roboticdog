@@ -46,6 +46,7 @@ setup(
             'sim_bridge_node        = dog.sim_bridge_node:main',
             'autonomous_bridge_node = dog.autonomous_bridge_node:main',
             'torque_monitor_node    = dog.torque_monitor_node:main',
+            'joint_tracking_controller_node = dog.joint_tracking_controller_node:main',
         ],
     },
 )

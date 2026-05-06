@@ -6,6 +6,10 @@
 gait_node:
   ros__parameters:
     control_rate_hz: 50
+    upper_start_angle_deg: 45.0  # +down from forward horizontal (upper link)
+    lower_start_angle_deg: 45.0  # +down from rearward horizontal (lower link)
+    shuffle_lift_upper_trim_deg: 0.0  # IK-space upper/shoulder trim during lift
+    shuffle_lift_lower_trim_deg: 20.0  # +value = more knee tuck during lift
 
 state_manager:
   ros__parameters:
@@ -14,3 +18,18 @@ state_manager:
     turbo_multiplier: 2.0
     joystick_deadzone: 0.10
     fall_detection_angle: 45.0   # degrees — triggers E-stop
+
+joint_tracking_controller:
+  ros__parameters:
+    control_rate_hz: 100.0
+    outer_kp: 0.25
+    outer_ki: 0.10
+    error_deadband_rad: 0.02
+    ok_error_rad: 0.08
+    max_integral_rad: 0.20
+    max_correction_rad: 0.35
+    max_cmd_step_rad: 0.05
+    # Disable freshness timeout failsafes (after first sample) so brief
+    # micro-ROS/Teensy transport hiccups do not abruptly halt walking.
+    feedback_timeout_s: 0.0
+    desired_timeout_s: 0.0

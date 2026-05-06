@@ -1,7 +1,7 @@
 """
 calibration_node.py
 -------------------
-Interactive CAN motor calibration tool for the Dog robot.
+Interactive CAN motor calibration tool for the 8DOF Dog robot.
 
 Calibration workflow
 --------------------
@@ -11,7 +11,6 @@ Phase 1 — Motor ID verification:
 
 Phase 2 — Zero position:
   You physically position each joint at its mechanical zero:
-    Hip:      leg pointing straight out laterally (no abduction)
     Shoulder: upper leg pointing straight down (vertical)
     Knee:     lower leg fully extended (inline with upper leg)
   Press Enter → the tool publishes the motor ID to /can_calibrate.
@@ -19,7 +18,7 @@ Phase 2 — Zero position:
   The motor stores this as its permanent zero.
 
 Phase 3 — Verification:
-  All motors are commanded to 0.0 rad.  Each joint should be at mechanical zero.
+  All motors are commanded to 0.0 rad. Each joint should be at mechanical zero.
 
 Prerequisites
 -------------
@@ -33,7 +32,7 @@ Then in another terminal:
   ros2 run dog calibration_node
 
 Published topics:
-  /joint_angles    (std_msgs/Float32MultiArray)  — 12 motor commands in radians
+  /joint_angles    (std_msgs/Float32MultiArray)  — 8 motor commands in radians
   /can_calibrate   (std_msgs/UInt8)              — motor ID to send "set zero"
   /can_enable      (std_msgs/Bool)               — enter / exit motor mode
 """
@@ -53,16 +52,17 @@ from dog.robot_config import (
     JOINT_ANGLE_MIN, JOINT_ANGLE_MAX,
     MOTOR_IDS,
 )
+from dog.kinematics import compute_all_legs
+from dog.gait_generator import default_foot_positions
 
 NAMES = [
-    'FR Hip',      'FR Shoulder', 'FR Knee',
-    'FL Hip',      'FL Shoulder', 'FL Knee',
-    'RR Hip',      'RR Shoulder', 'RR Knee',
-    'RL Hip',      'RL Shoulder', 'RL Knee',
+    'FR Shoulder', 'FR Knee',
+    'FL Shoulder', 'FL Knee',
+    'RR Shoulder', 'RR Knee',
+    'RL Shoulder', 'RL Knee',
 ]
 
 ZERO_HINTS = [
-    'Hip bracket parallel to body — upper leg hangs straight down laterally',
     'Upper leg (femur) points straight DOWN toward the floor',
     'Lower leg (tibia) fully extended — inline with upper leg',
 ] * 4
@@ -80,7 +80,7 @@ class CalibrationNode(Node):
         self._joint_pub   = self.create_publisher(Float32MultiArray, 'joint_angles',  10)
         self._cal_pub     = self.create_publisher(UInt8,             'can_calibrate', 10)
         self._enable_pub  = self.create_publisher(Bool,              'can_enable',    10)
-        self._angles      = [0.0] * 12
+        self._angles      = [0.0] * 8
         self._connected   = False
 
     def wait_for_teensy(self, timeout_s: float = 10.0) -> bool:
@@ -133,9 +133,9 @@ def phase1_verify(node: CalibrationNode) -> bool:
 
     for i, name in enumerate(NAMES):
         motor_id = MOTOR_IDS[i]
-        angles   = [0.0] * 12
+        angles   = [0.0] * 8
 
-        print(f'  [{i + 1:2d}/12]  {name:<16}  (Motor ID {motor_id})')
+        print(f'  [{i + 1:2d}/8 ]  {name:<16}  (Motor ID {motor_id})')
         print('         Nudging +0.2 rad…', end='', flush=True)
 
         angles[i] = 0.2
@@ -204,17 +204,16 @@ def phase2_zero(node: CalibrationNode) -> bool:
     print('  For each joint, type degree values to drive the motor to its')
     print('  mechanical zero, then type  z  to save that position as zero.\n')
     print('  Mechanical zeros:')
-    print('    Hip      — leg bracket parallel to body, upper leg hangs straight down')
     print('    Shoulder — upper leg (femur) points straight DOWN to the floor')
     print('    Knee     — lower leg (tibia) fully extended, inline with upper leg\n')
 
     # Start all joints at 0 so they go to their current stored zero first
-    current_angles = [0.0] * 12
+    current_angles = [0.0] * 8
     node.send_angles(current_angles, move_s=0.5)
 
     for i, name in enumerate(NAMES):
         motor_id = MOTOR_IDS[i]
-        print(f'  [{i + 1:2d}/12]  {name:<16}  (Motor ID {motor_id})')
+        print(f'  [{i + 1:2d}/8 ]  {name:<16}  (Motor ID {motor_id})')
         print(f'         Target: {ZERO_HINTS[i]}')
 
         result = _position_joint_interactively(node, i, current_angles)
@@ -247,14 +246,20 @@ def phase3_verify(node: CalibrationNode) -> None:
     print('─' * 60)
     print('  Commanding all motors to 0.0 rad.')
     print('  Every joint should now be at its mechanical zero.')
-    print('  Check: hips straight out, shoulders vertical, knees straight.\n')
+    print('  Check: shoulders vertical, knees straight.\n')
 
-    node.send_angles([0.0] * 12, move_s=1.0)
+    node.send_angles([0.0] * 8, move_s=1.0)
 
     input('  Inspect the robot, then press Enter to command NEUTRAL standing '
           'angles…')
 
-    node.send_angles(list(NEUTRAL_ANGLES), move_s=1.0)
+    # /joint_angles expects motor-frame commands. Build neutral directly from IK
+    # foot defaults so frame/sign conventions are consistent.
+    try:
+        neutral_motor = compute_all_legs(default_foot_positions())
+    except Exception:
+        neutral_motor = list(NEUTRAL_ANGLES)
+    node.send_angles(list(neutral_motor), move_s=1.0)
     print('  Robot should now be in the neutral standing pose.')
     print('  If any joint looks wrong, adjust JOINT_OFFSETS in robot_config.py.')
     print()

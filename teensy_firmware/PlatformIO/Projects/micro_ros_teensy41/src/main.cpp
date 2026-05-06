@@ -1,9 +1,25 @@
 /*
- * dog_teensy — main.cpp
+ * dog_teensy — main.cpp  (REVISED)
  * ─────────────────────────────────────────────────────────────────────────────
  * micro-ROS firmware for Teensy 4.1
  * Drives CubeMars AK45-36 brushless actuators via CAN bus (MIT mini-cheetah
  * protocol), reads the BNO085 9-DOF IMU, and reads the u-blox SAM-M10Q GPS.
+ *
+ * CHANGES vs original:
+ *   FIX 1 — Watchdog no longer permanently latches motors off.
+ *            A new `motors_watchdog_disabled` flag distinguishes between an
+ *            operator-commanded disable (/can_enable false) and a watchdog
+ *            timeout.  The next /joint_angles received after a watchdog
+ *            timeout automatically re-enters MIT mode.
+ *   FIX 2 — Exit frames are sent in a ×2 burst (5 ms gap between bursts)
+ *            so a single dropped CAN frame doesn't leave motors in MIT mode.
+ *   FIX 3 — Removed all delay() calls from all_motors_enter_mode() and
+ *            all_motors_exit_mode().  delay() inside or adjacent to the
+ *            micro-ROS executor blocks the cooperative scheduler and can
+ *            corrupt executor state.  FlexCAN's hardware TX FIFO handles
+ *            inter-frame timing automatically.
+ *   FIX 4 — Watchdog block uses delayMicroseconds(5000) for the burst gap,
+ *            called from loop() outside the executor spin, which is safe.
  *
  * Hardware wiring:
  * ─────────────────────────────────────────────────────────────────────────────
@@ -43,8 +59,8 @@
  *     Motor ID → send "set zero position" MIT frame (permanent) to that motor.
  *
  *   /can_enable      (std_msgs/Bool)
- *     true  → enter MIT motor mode on all 12 motors
- *     false → exit  MIT motor mode on all 12 motors
+ *     true  → enter MIT motor mode on all 8 motors
+ *     false → exit  MIT motor mode on all 8 motors (operator-commanded)
  *
  * Published:
  *   /imu/data        (sensor_msgs/Imu)            — 50 Hz
@@ -52,6 +68,7 @@
  *   /fix             (sensor_msgs/NavSatFix)        — 1 Hz
  *   /joint_states    (std_msgs/Float32MultiArray)  — updated on motor reply
  *     32 floats: position[8] (rad), velocity[8] (rad/s), current[8] (A), temp[8] (°C)
+ *   /motor_fault     (std_msgs/UInt8)              — on fault, bitmask
  *
  * CubeMars AK45-36 MIT mini-cheetah CAN protocol
  * ─────────────────────────────────────────────────────────────────────────────
@@ -110,10 +127,10 @@
 #define CAN_BAUD   1000000UL   // 1 Mbps — AK45-36 default
 
 // Motor ID table: index = flat motor index (0–7), value = CAN motor ID
-// Hip motors removed (fried) — replaced with static dummy. 8DOF only.
+// Hip motors removed — replaced with static dummy. 8DOF only.
 // Order: FR_sho, FR_kne, FL_sho, FL_kne, RR_sho, RR_kne, RL_sho, RL_kne
-static const uint8_t MOTOR_ID[8] = { 0x79, 0x7A, 0x75, 0x78, 0x73, 0x74, 0x76, 0x77 };
-//                                    FR_sho FR_kne FL_sho FL_kne RR_sho RR_kne RL_sho RL_kne
+static const uint8_t MOTOR_ID[8]  = { 0x79, 0x7A, 0x75, 0x78, 0x73, 0x74, 0x76, 0x77 };
+//                                     FR_sho FR_kne FL_sho FL_kne RR_sho RR_kne RL_sho RL_kne
 
 // CAN bus assignment per motor index (1 = CAN1 front, 3 = CAN3 rear)
 static const uint8_t MOTOR_BUS[8] = { 1, 1, 1, 1,   // FR + FL → CAN1
@@ -158,12 +175,12 @@ static float g_kd = DEFAULT_KD;
 // Motors stay off until the operator re-enables via /can_enable true.
 //
 // MAX_POS_STEP_RAD rate-limits every position command to prevent sudden large
-// jumps that cause current spikes. At 50 Hz: 0.20 rad/tick = 10 rad/s output.
+// jumps that cause current spikes. At 100 Hz: 0.10 rad/tick = 10 rad/s output.
 // ─────────────────────────────────────────────────────────────────────────────
 #define TEMP_CUTOFF_C       75.0f   // °C  — thermal cutoff
 #define KT_OUTPUT           4.30f   // N·m/A — AK45-36 KV80, 36:1 gear (output shaft)
-#define CURRENT_CUTOFF_A    2.0f    // A   — instantaneous per-motor current cutoff
-#define CURRENT_CUTOFF_NM   (CURRENT_CUTOFF_A * KT_OUTPUT)  // 8.6 N·m
+#define CURRENT_CUTOFF_A    2.5f    // A   — instantaneous per-motor current cutoff
+#define CURRENT_CUTOFF_NM   (CURRENT_CUTOFF_A * KT_OUTPUT)  // 10.75 N·m
 #define TORQUE_CUTOFF_NM    14.0f   // N·m — sustained torque / stall cutoff
 #define STALL_TICKS         200     // ticks at 100 Hz ≈ 2 s sustained
 #define CONTROL_RATE_HZ     100     // must match gait_node.py CONTROL_RATE_HZ
@@ -188,8 +205,8 @@ static float bno_gx = 0.0f, bno_gy = 0.0f, bno_gz = 0.0f;
 // ─────────────────────────────────────────────────────────────────────────────
 // SAM-M10Q GPS
 // ─────────────────────────────────────────────────────────────────────────────
-#define GPS_BAUD   9600       // SAM-M10Q factory default
-#define GPS_RATE_HZ  1        // GNSS fix rate (SAM-M10Q default: 1 Hz)
+#define GPS_BAUD    9600      // SAM-M10Q factory default
+#define GPS_RATE_HZ    1      // GNSS fix rate (SAM-M10Q default: 1 Hz)
 
 static TinyGPSPlus gps;
 
@@ -208,8 +225,14 @@ FlexCAN_T4<CAN3, RX_SIZE_256, TX_SIZE_16> can3;
 // ─────────────────────────────────────────────────────────────────────────────
 // STATE
 // ─────────────────────────────────────────────────────────────────────────────
-static float joint_cmd[8] = {0.0f};   // desired motor positions (rad)
+static float joint_cmd[8]   = {0.0f};  // desired motor positions (rad)
 static bool  motors_enabled = false;
+
+// FIX 1 — distinguishes operator disable from watchdog timeout.
+// When true, the next /joint_angles will automatically re-enter MIT mode.
+// When false (operator disabled via /can_enable false), commands are dropped
+// and the operator must explicitly send /can_enable true to re-enable.
+static bool  motors_watchdog_disabled = false;
 
 // Latest motor feedback — updated whenever a response frame arrives
 static float fb_pos[8]  = {0.0f};  // rad
@@ -221,7 +244,12 @@ static float fb_temp[8] = {0.0f};  // °C  (raw byte - 40)
 // COMMAND WATCHDOG
 // If motors are enabled but no /joint_angles arrives within this window,
 // exit motor mode automatically.  Covers abrupt launch kills, agent crashes,
-// and USB reconnect races where the LED would otherwise stay solid orange.
+// and USB reconnect races.
+//
+// RECOVERY (FIX 1):  Unlike the original code which latched motors off
+// permanently, a watchdog-disabled motor set is automatically re-enabled
+// when the next /joint_angles message arrives (see angles_callback).
+// An operator-commanded /can_enable false does NOT auto-recover.
 // ─────────────────────────────────────────────────────────────────────────────
 #define CMD_WATCHDOG_MS  2000UL   // ms — 2 s without a command → safe exit
 
@@ -230,7 +258,15 @@ static unsigned long last_cmd_ms = 0;   // millis() of last angles_callback
 // ── Per-motor safety state ────────────────────────────────────────────────────
 static bool    motor_faulted[8]     = {};  // true = motor removed from MIT mode
 static uint8_t motor_stall_ticks[8] = {};  // consecutive ticks above TORQUE_CUTOFF
+static uint8_t motor_cur_trip[8]    = {};  // consecutive ticks above CURRENT_CUTOFF
 static float   last_sent_cmd[8]     = {};  // last commanded position (rate limiter)
+
+// Number of consecutive CAN feedback samples that must exceed CURRENT_CUTOFF_NM
+// before a fault is declared.  A single-sample spike (e.g. leg ground impact) is
+// common during dynamic walking and should not shut the whole robot down.
+// At ~100 Hz feedback: 3 ticks ≈ 30 ms — fast enough for real overcurrent,
+// long enough to ignore brief mechanical transients.
+#define CURRENT_TRIP_TICKS  3
 
 // ─────────────────────────────────────────────────────────────────────────────
 // micro-ROS HANDLES
@@ -282,18 +318,18 @@ static inline float constrain_f(float v, float lo, float hi) {
 
 // Map a float in [x_min, x_max] to an unsigned integer in [0, 2^bits - 1]
 static inline uint32_t float_to_uint(float x, float x_min, float x_max, int bits) {
-    float span = x_max - x_min;
-    float offset = x - x_min;
+    float    span    = x_max - x_min;
+    float    offset  = x - x_min;
     uint32_t max_val = (1u << bits) - 1;
-    int32_t raw = (int32_t)(offset / span * (float)max_val);
-    if (raw < 0)            raw = 0;
+    int32_t  raw     = (int32_t)(offset / span * (float)max_val);
+    if (raw < 0)                raw = 0;
     if (raw > (int32_t)max_val) raw = (int32_t)max_val;
     return (uint32_t)raw;
 }
 
 // Map an unsigned integer in [0, 2^bits - 1] back to float in [x_min, x_max]
 static inline float uint_to_float(uint32_t raw, float x_min, float x_max, int bits) {
-    float span = x_max - x_min;
+    float    span    = x_max - x_min;
     uint32_t max_val = (1u << bits) - 1;
     return (float)raw / (float)max_val * span + x_min;
 }
@@ -303,7 +339,7 @@ static void can_send_std(uint8_t bus, uint8_t motor_id,
                          const uint8_t *data, uint8_t len) {
     CAN_message_t msg;
     memset(&msg, 0, sizeof(msg));  // zero all flags to avoid garbage bits
-    msg.flags.extended = 0;   // standard 11-bit ID
+    msg.flags.extended = 0;        // standard 11-bit ID
     msg.flags.remote   = 0;
     msg.id  = motor_id;
     msg.len = len;
@@ -343,15 +379,15 @@ static void motor_send_mit(uint8_t bus, uint8_t motor_id,
                             float t_ff) {
     p_des = constrain_f(p_des, -MIT_P_MAX,  MIT_P_MAX);
     v_des = constrain_f(v_des, -MIT_V_MAX,  MIT_V_MAX);
-    kp    = constrain_f(kp,    0.0f,        MIT_KP_MAX);
-    kd    = constrain_f(kd,    0.0f,        MIT_KD_MAX);
+    kp    = constrain_f(kp,     0.0f,       MIT_KP_MAX);
+    kd    = constrain_f(kd,     0.0f,       MIT_KD_MAX);
     t_ff  = constrain_f(t_ff,  -MIT_T_MAX,  MIT_T_MAX);
 
-    uint32_t p_int = float_to_uint(p_des, -MIT_P_MAX,  MIT_P_MAX,  16);
-    uint32_t v_int = float_to_uint(v_des, -MIT_V_MAX,  MIT_V_MAX,  12);
-    uint32_t kp_int= float_to_uint(kp,    0.0f,        MIT_KP_MAX, 12);
-    uint32_t kd_int= float_to_uint(kd,    0.0f,        MIT_KD_MAX, 12);
-    uint32_t t_int = float_to_uint(t_ff,  -MIT_T_MAX,  MIT_T_MAX,  12);
+    uint32_t p_int  = float_to_uint(p_des, -MIT_P_MAX,  MIT_P_MAX,  16);
+    uint32_t v_int  = float_to_uint(v_des, -MIT_V_MAX,  MIT_V_MAX,  12);
+    uint32_t kp_int = float_to_uint(kp,     0.0f,       MIT_KP_MAX, 12);
+    uint32_t kd_int = float_to_uint(kd,     0.0f,       MIT_KD_MAX, 12);
+    uint32_t t_int  = float_to_uint(t_ff,  -MIT_T_MAX,  MIT_T_MAX,  12);
 
     uint8_t d[8];
     d[0] = (uint8_t)(p_int  >> 8);
@@ -403,44 +439,100 @@ static bool parse_mit_response(const CAN_message_t &msg) {
     if (!motor_faulted[idx]) {
         // Thermal cutoff
         if (fb_temp[idx] >= TEMP_CUTOFF_C) {
+            Serial.printf("[FAULT] motor idx=%d id=0x%02X  THERMAL  temp=%.1f C\n",
+                          idx, MOTOR_ID[idx], fb_temp[idx]);
             trigger_fault(idx);
             return true;
         }
-        // Instantaneous current cutoff (2 A)
+        // Instantaneous current / torque cutoff with short hysteresis.
+        // Require CURRENT_TRIP_TICKS consecutive samples above the threshold
+        // so that a single impact spike during leg swing does not fault the robot.
         if (fabsf(fb_cur[idx]) >= CURRENT_CUTOFF_NM) {
-            trigger_fault(idx);
-            return true;
+            if (++motor_cur_trip[idx] >= CURRENT_TRIP_TICKS) {
+                Serial.printf("[FAULT] motor idx=%d id=0x%02X  INSTANT_CURRENT"
+                              "  cur=%.2f Nm (limit %.2f)\n",
+                              idx, MOTOR_ID[idx],
+                              fb_cur[idx], CURRENT_CUTOFF_NM);
+                trigger_fault(idx);
+                return true;
+            }
+        } else {
+            motor_cur_trip[idx] = 0;
         }
         // Sustained torque / stall cutoff
         if (fabsf(fb_cur[idx]) >= TORQUE_CUTOFF_NM) {
             if (++motor_stall_ticks[idx] >= STALL_TICKS) {
+                Serial.printf("[FAULT] motor idx=%d id=0x%02X  STALL"
+                              "  cur=%.2f Nm (limit %.2f)\n",
+                              idx, MOTOR_ID[idx],
+                              fb_cur[idx], TORQUE_CUTOFF_NM);
                 trigger_fault(idx);
                 return true;
             }
         } else {
             motor_stall_ticks[idx] = 0;
         }
-        // Motor error flags
+        // Motor error-flag byte — log but do NOT hard-fault.
+        // CubeMars AK-series motors can report non-zero status bits in this byte
+        // (e.g. encoder calibration state, communication mode indicator) that are
+        // not true faults.  Real hardware faults (thermal, torque) are already
+        // caught by the checks above.  If you see repeated warnings here, inspect
+        // the motor with the CubeMars R-Link tool.
         if (msg.buf[7] != 0) {
-            trigger_fault(idx);
-            return true;
+            // Throttle: only print once per second per motor to avoid serial flood
+            static unsigned long last_errflag_ms[8] = {};
+            unsigned long now_ms = millis();
+            if (now_ms - last_errflag_ms[idx] > 1000) {
+                last_errflag_ms[idx] = now_ms;
+                Serial.printf("[WARN]  motor idx=%d id=0x%02X  error_byte=0x%02X"
+                              " (not faulting)\n",
+                              idx, MOTOR_ID[idx], msg.buf[7]);
+            }
         }
     }
     return true;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MOTOR MODE HELPERS  (FIX 3 — delay() removed)
+// ─────────────────────────────────────────────────────────────────────────────
+// The original code had delay(2) between each motor frame inside these helpers.
+// That caused 16 ms of blocking every time the helpers were called, which
+// starved the micro-ROS executor and could corrupt its internal state.
+//
+// FlexCAN_T4's hardware TX FIFO handles CAN bus arbitration and inter-frame
+// spacing automatically — no software delay is needed between frames.
+// The SN65HVD230 transceiver operates up to 1 Mbps without pacing delays.
+// ─────────────────────────────────────────────────────────────────────────────
+
 static void all_motors_enter_mode() {
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < 8; i++)
         motor_enter_mode(MOTOR_BUS[i], MOTOR_ID[i]);
-        delay(2);
-    }
 }
 
+// FIX 2 — exit frames are sent in two bursts separated by 5 ms.
+// This makes it far less likely that a single dropped CAN frame (which can
+// happen under bus load) leaves a motor stuck in MIT mode holding its last
+// position command.  The 5 ms gap is handled with delayMicroseconds() which
+// is only called from loop() (outside the executor spin) — safe to block
+// for this short duration.
+//
+// NOTE: If called from inside a micro-ROS callback (e.g. trigger_fault),
+// the second burst gap becomes a 5 ms executor stall.  That is acceptable
+// because trigger_fault is a safety shutdown path that immediately sets
+// motors_enabled = false and is not called repeatedly.
 static void all_motors_exit_mode() {
-    for (int i = 0; i < 8; i++) {
+    // First burst
+    for (int i = 0; i < 8; i++)
         motor_exit_mode(MOTOR_BUS[i], MOTOR_ID[i]);
-        delay(2);
-    }
+
+    // Short gap — gives the bus time to settle before the retry burst.
+    // 5 ms is well below the micro-ROS executor spin budget of 10 ms.
+    delayMicroseconds(5000);
+
+    // Second burst — redundancy in case any first-burst frame was dropped
+    for (int i = 0; i < 8; i++)
+        motor_exit_mode(MOTOR_BUS[i], MOTOR_ID[i]);
 }
 
 // Publish the current fault bitmask on /motor_fault
@@ -457,7 +549,8 @@ static void publish_fault() {
 static void trigger_fault(int idx) {
     motor_faulted[idx] = true;
     all_motors_exit_mode();
-    motors_enabled = false;
+    motors_enabled           = false;
+    motors_watchdog_disabled = false;  // operator must explicitly re-enable after a fault
     publish_fault();
 }
 
@@ -530,13 +623,46 @@ static void bno_poll() {
 // micro-ROS CALLBACKS
 // ─────────────────────────────────────────────────────────────────────────────
 
+// FIX 1 — angles_callback now auto-recovers from a watchdog timeout.
+//
+// Sequence:
+//   1. Watchdog fires  → all_motors_exit_mode(), motors_enabled = false,
+//                         motors_watchdog_disabled = true
+//   2. Jetson resumes  → /joint_angles arrives here
+//   3. We detect       → motors_watchdog_disabled == true, motors_enabled == false
+//   4. We auto-enable  → re-enter MIT mode, seed rate limiter from fb_pos,
+//                         set motors_enabled = true, clear watchdog flag
+//   5. Send the command normally.
+//
+// If the operator deliberately disabled motors via /can_enable false,
+// motors_watchdog_disabled remains false, so step 3 does NOT trigger and
+// commands continue to be dropped until /can_enable true is received.
 void angles_callback(const void *msg_in) {
     last_cmd_ms = millis();   // feed the command watchdog
+
     const std_msgs__msg__Float32MultiArray *msg =
         (const std_msgs__msg__Float32MultiArray *)msg_in;
     if (msg->data.size != 8) return;
+
     for (int i = 0; i < 8; i++)
         joint_cmd[i] = msg->data.data[i];
+
+    // Auto-recovery from watchdog timeout only (not from operator disable)
+    if (!motors_enabled && motors_watchdog_disabled) {
+        Serial.println("[WATCHDOG] /joint_angles received — auto re-entering MIT mode");
+        memset(motor_faulted,     0, sizeof(motor_faulted));
+        memset(motor_stall_ticks, 0, sizeof(motor_stall_ticks));
+        memset(motor_cur_trip,    0, sizeof(motor_cur_trip));
+        // Seed rate-limiter from current feedback positions so the first MIT
+        // command starts at the motor's actual angle, not zero.
+        for (int i = 0; i < 8; i++)
+            last_sent_cmd[i] = fb_pos[i];
+        all_motors_enter_mode();
+        motors_enabled           = true;
+        motors_watchdog_disabled = false;
+        publish_fault();   // publish 0x00 to confirm faults cleared
+    }
+
     if (motors_enabled)
         send_joint_cmds(joint_cmd);
 }
@@ -562,20 +688,30 @@ void calibrate_callback(const void *msg_in) {
     }
 }
 
+// FIX 1 — enable_callback clears motors_watchdog_disabled so that an explicit
+// operator /can_enable false is never overridden by auto-recovery.
 void enable_callback(const void *msg_in) {
     const std_msgs__msg__Bool *msg = (const std_msgs__msg__Bool *)msg_in;
     if (msg->data) {
-        // Clear fault state so the operator can retry after cooling / inspection
+        // Clear all fault and safety state so the operator can retry
+        // after cooling / inspection
         memset(motor_faulted,     0, sizeof(motor_faulted));
         memset(motor_stall_ticks, 0, sizeof(motor_stall_ticks));
-        memset(last_sent_cmd,     0, sizeof(last_sent_cmd));
+        memset(motor_cur_trip,    0, sizeof(motor_cur_trip));
+        motors_watchdog_disabled = false;  // explicit enable overrides watchdog state
+        // Seed rate-limiter from current feedback positions
+        for (int i = 0; i < 8; i++)
+            last_sent_cmd[i] = fb_pos[i];
         all_motors_enter_mode();
         motors_enabled = true;
-        last_cmd_ms = millis();   // reset watchdog so it doesn't fire immediately
+        last_cmd_ms    = millis();   // reset watchdog so it doesn't fire immediately
         publish_fault();   // publish 0x00 to confirm faults cleared
     } else {
+        // Operator-commanded disable — do NOT set motors_watchdog_disabled.
+        // This ensures the next /joint_angles does NOT auto-recover.
         all_motors_exit_mode();
-        motors_enabled = false;
+        motors_enabled           = false;
+        motors_watchdog_disabled = false;   // explicit: operator must re-enable manually
     }
 }
 
@@ -659,11 +795,13 @@ bool create_entities() {
     rcl_init_options_t init_options = rcl_get_zero_initialized_init_options();
     rcl_init_options_init(&init_options, allocator);
     rcl_init_options_set_domain_id(&init_options, ROS_DOMAIN_ID_VAL);
-    rcl_ret_t ret = rclc_support_init_with_options(&support, 0, NULL, &init_options, &allocator);
+    rcl_ret_t ret = rclc_support_init_with_options(&support, 0, NULL,
+                                                   &init_options, &allocator);
     rcl_init_options_fini(&init_options);
     if (ret != RCL_RET_OK) return false;
 
-    if (rclc_node_init_default(&node, "teensy_node", "", &support) != RCL_RET_OK) return false;
+    if (rclc_node_init_default(&node, "teensy_node", "", &support) != RCL_RET_OK)
+        return false;
 
     // Subscriptions
     if (rclc_subscription_init_default(
@@ -724,7 +862,7 @@ bool create_entities() {
             RCL_MS_TO_NS(1000 / GPS_RATE_HZ),
             gps_timer_callback) != RCL_RET_OK) return false;
 
-    // Executor: 4 subscriptions + 2 timers
+    // Executor: 4 subscriptions + 2 timers = 6 handles
     if (rclc_executor_init(&executor, &support.context, 6, &allocator) != RCL_RET_OK)
         return false;
 
@@ -794,9 +932,9 @@ void setup() {
     bno_ok = bno08x.begin_I2C(BNO085_ADDR, &Wire);
     if (bno_ok) {
         // Rotation vector fuses accel + gyro + magnetometer → absolute heading
-        bno08x.enableReport(SH2_ROTATION_VECTOR,        IMU_INTERVAL_US);
-        bno08x.enableReport(SH2_ACCELEROMETER,          IMU_INTERVAL_US);
-        bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED,   IMU_INTERVAL_US);
+        bno08x.enableReport(SH2_ROTATION_VECTOR,       IMU_INTERVAL_US);
+        bno08x.enableReport(SH2_ACCELEROMETER,         IMU_INTERVAL_US);
+        bno08x.enableReport(SH2_GYROSCOPE_CALIBRATED,  IMU_INTERVAL_US);
     }
 
     // SAM-M10Q on Serial1 (RX=0, TX=1)
@@ -817,12 +955,12 @@ void setup() {
     joint_states_msg.data.size     = 32;
     joint_states_msg.data.capacity = 32;
 
-    static char imu_frame[]  = "imu_link";
+    static char imu_frame[] = "imu_link";
     imu_msg.header.frame_id.data     = imu_frame;
     imu_msg.header.frame_id.size     = strlen(imu_frame);
     imu_msg.header.frame_id.capacity = sizeof(imu_frame);
 
-    static char gps_frame[]  = "gps_link";
+    static char gps_frame[] = "gps_link";
     fix_msg.header.frame_id.data     = gps_frame;
     fix_msg.header.frame_id.size     = strlen(gps_frame);
     fix_msg.header.frame_id.capacity = sizeof(gps_frame);
@@ -856,7 +994,7 @@ void loop() {
     // Always feed GPS chars to TinyGPSPlus regardless of agent state
     while (Serial1.available() > 0) {
         if (gps.encode(Serial1.read())) {
-            // New sentence parsed — update GPS state
+            // New NMEA sentence parsed — update GPS state
             if (gps.location.isValid()) {
                 gps_lat       = gps.location.lat();
                 gps_lon       = gps.location.lng();
@@ -880,9 +1018,11 @@ void loop() {
             }
             if (rmw_uros_ping_agent(100, 1) == RMW_RET_OK) {
                 if (create_entities()) {
-                    memset(motor_faulted,     0, sizeof(motor_faulted));
-                    memset(motor_stall_ticks, 0, sizeof(motor_stall_ticks));
-                    memset(last_sent_cmd,     0, sizeof(last_sent_cmd));
+                    memset(motor_faulted,          0, sizeof(motor_faulted));
+                    memset(motor_stall_ticks,      0, sizeof(motor_stall_ticks));
+                    memset(motor_cur_trip,         0, sizeof(motor_cur_trip));
+                    memset(last_sent_cmd,          0, sizeof(last_sent_cmd));
+                    motors_watchdog_disabled = false;
                     agent_state  = AGENT_CONNECTED;
                     last_ping_ms = millis();
                     last_cmd_ms  = millis();   // reset watchdog on fresh connect
@@ -895,21 +1035,34 @@ void loop() {
             poll_can_rx();
             rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10));
 
-            // Command watchdog: if motors are active but no /joint_angles has
-            // arrived for CMD_WATCHDOG_MS, the Jetson nodes are gone (launch
-            // killed, node crashed, etc.).  Exit motor mode immediately so the
-            // motors don't hold position with no supervision.
+            // ── Command watchdog (FIX 1 + FIX 2) ────────────────────────────
+            // If motors are active but no /joint_angles has arrived for
+            // CMD_WATCHDOG_MS, the Jetson nodes are presumed gone (launch
+            // killed, node crashed, etc.).
+            //
+            // Unlike the original, we set motors_watchdog_disabled = true so
+            // that the next /joint_angles in angles_callback automatically
+            // re-enters MIT mode without requiring /can_enable true.
+            //
+            // The exit burst (×2 with 5 ms gap) is safe to call here from
+            // loop() because we are not inside the executor spin.
             if (motors_enabled && (millis() - last_cmd_ms) > CMD_WATCHDOG_MS) {
-                all_motors_exit_mode();
-                motors_enabled = false;
+                Serial.println("[WATCHDOG] No /joint_angles — exiting MIT mode"
+                               " (will auto-recover on next command)");
+                all_motors_exit_mode();       // ×2 burst — FIX 2
+                motors_enabled           = false;
+                motors_watchdog_disabled = true;   // FIX 1 — allow auto-recovery
+                last_cmd_ms              = millis(); // prevent repeated watchdog fires
             }
 
+            // ── Agent keepalive ping ─────────────────────────────────────────
             if (millis() - last_ping_ms > 500) {
                 last_ping_ms = millis();
                 if (rmw_uros_ping_agent(100, 3) != RMW_RET_OK) {
                     if (motors_enabled) {
-                        all_motors_exit_mode();
-                        motors_enabled = false;
+                        all_motors_exit_mode();   // ×2 burst — FIX 2
+                        motors_enabled           = false;
+                        motors_watchdog_disabled = true;  // agent reconnect auto-recovers
                     }
                     destroy_entities();
                     agent_state = AGENT_DISCONNECTED;

@@ -3,7 +3,7 @@
 # SLAM Toolbox configuration for the Dog quadruped (online async mapping mode).
 #
 # Subscribes to:  /scan        (LaserScan from Hokuyo UTM-30LX)
-# Requires TF:    odom → base_link  (from ZED 2 visual odometry)
+# Requires TF:    odom → base_link  (from your lidar odometry/localization)
 # Publishes TF:   map  → odom       (consumed by Nav2)
 # Publishes:      /map (OccupancyGrid)
 #

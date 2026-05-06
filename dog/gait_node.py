@@ -19,6 +19,7 @@ Published topics:
   /joint_gains    (std_msgs/Float32MultiArray) — PD gains for the active gait
 """
 
+import math
 import time
 
 import rclpy
@@ -29,13 +30,14 @@ from geometry_msgs.msg import Twist, Vector3
 from dog.gait_generator import GaitGenerator, GaitType, default_foot_positions
 from dog.kinematics import compute_all_legs
 from dog.state_manager import RobotState
-from dog.robot_config import NEUTRAL_ANGLES
+from dog.robot_config import (
+    NEUTRAL_ANGLES,
+    GAIT_START_UPPER_ANGLE_DEG, GAIT_START_LOWER_ANGLE_DEG,
+    SHUFFLE_LIFT_UPPER_TRIM_DEG, SHUFFLE_LIFT_LOWER_TRIM_DEG,
+    JOINT_DIRECTION, JOINT_ANGLE_MIN, JOINT_ANGLE_MAX,
+)
 
 _N_MOTORS = 8
-
-# Motor-frame angles for the neutral standing pose — used as the offset baseline.
-# Computed once at module load so _home_callback can subtract it directly.
-_NEUTRAL_MOTOR = compute_all_legs(default_foot_positions())
 
 
 CONTROL_RATE_HZ = 100
@@ -49,12 +51,15 @@ _TRANSITION_DURATION = 0.40
 # the PLA frame and let the 36:1 motors swing freely without fighting themselves.
 # Stiffer gains during stand/turtle give solid position hold.
 _GAIT_GAINS = {
-    GaitType.STAND:  (45.0, 2.0),
-    GaitType.TURTLE: (40.0, 2.0),
-    GaitType.CRAWL:  (35.0, 1.5),
-    GaitType.WALK:   (30.0, 1.3),
-    GaitType.TROT:   (22.0, 1.2),
-    GaitType.GALLOP: (18.0, 1.0),
+    GaitType.STAND:     (45.0, 2.0),
+    GaitType.STEP:      (40.0, 2.0),  # sequential one-leg gait — stiff for clean steps
+    GaitType.TURTLE:    (40.0, 2.0),
+    GaitType.SHUFFLE:   (38.0, 1.8),
+    GaitType.CRAWL:     (35.0, 1.5),
+    GaitType.WALK:      (30.0, 1.3),
+    GaitType.DIAG_TROT: (25.0, 1.3),
+    GaitType.TROT:      (22.0, 1.2),
+    GaitType.GALLOP:    (18.0, 1.0),
 }
 
 
@@ -63,7 +68,23 @@ class GaitNode(Node):
     def __init__(self):
         super().__init__('gait_node')
 
-        self.gait       = GaitGenerator()
+        self.declare_parameter('upper_start_angle_deg', GAIT_START_UPPER_ANGLE_DEG)
+        self.declare_parameter('lower_start_angle_deg', GAIT_START_LOWER_ANGLE_DEG)
+        self.declare_parameter('shuffle_lift_upper_trim_deg', SHUFFLE_LIFT_UPPER_TRIM_DEG)
+        self.declare_parameter('shuffle_lift_lower_trim_deg', SHUFFLE_LIFT_LOWER_TRIM_DEG)
+        upper_start_deg = float(self.get_parameter('upper_start_angle_deg').value)
+        lower_start_deg = float(self.get_parameter('lower_start_angle_deg').value)
+        self._shuffle_lift_upper_trim_deg = float(
+            self.get_parameter('shuffle_lift_upper_trim_deg').value
+        )
+        self._shuffle_lift_lower_trim_deg = float(
+            self.get_parameter('shuffle_lift_lower_trim_deg').value
+        )
+
+        self.gait = GaitGenerator(
+            upper_start_deg=upper_start_deg,
+            lower_start_deg=lower_start_deg,
+        )
         self.vx           = 0.0
         self.vy           = 0.0
         self.yaw          = 0.0
@@ -71,12 +92,15 @@ class GaitNode(Node):
         self.pitch        = 0.0
         self._level_pitch = 0.0
         self._level_roll  = 0.0
-        self.robot_state     = RobotState.SITTING
-        self.walk_gait_type  = GaitType.TROT
+        self.robot_state     = RobotState.ESTOP
+        self.walk_gait_type  = GaitType.SHUFFLE
 
         # Joint-space offset so gait trajectories are relative to the operator's
         # physical standing position rather than the hardcoded NEUTRAL_ANGLES.
         self._home_offset = [0.0] * _N_MOTORS
+        self._neutral_motor = compute_all_legs(
+            default_foot_positions(self.gait.nominal_stand_z)
+        )
 
         # Latest motor-frame feedback from Teensy — used to start the blend
         # from wherever the legs actually are when walking begins.
@@ -84,6 +108,7 @@ class GaitNode(Node):
         self._transition_active = False
         self._transition_start  = 0.0
         self._transition_from   = [0.0] * _N_MOTORS
+        self._last_trim_clip_log_t = 0.0
 
         self.create_subscription(Twist,            'gait_command',    self._cmd_callback,       10)
         self.create_subscription(Vector3,          'body_pose',       self._pose_callback,      10)
@@ -103,6 +128,19 @@ class GaitNode(Node):
         self.create_timer(1.0 / CONTROL_RATE_HZ, self._control_loop)
 
         self.get_logger().info(f'Gait node running at {CONTROL_RATE_HZ} Hz')
+        self.get_logger().info(
+            'Start-angle setup: upper=%.1f deg, lower=%.1f deg, stand_x=%.1f mm, stand_z=%.1f mm'
+            % (
+                upper_start_deg,
+                lower_start_deg,
+                self.gait.nominal_stand_x,
+                self.gait.nominal_stand_z,
+            )
+        )
+        self.get_logger().info(
+            'Shuffle lift trim: upper=%+.2f deg, lower=%+.2f deg (+lower=tuck)'
+            % (self._shuffle_lift_upper_trim_deg, self._shuffle_lift_lower_trim_deg)
+        )
         self._publish_gains(GaitType.STAND)
 
     # ────────────────────────────────────────────────────────────────
@@ -125,6 +163,16 @@ class GaitNode(Node):
         except KeyError:
             self.get_logger().warn(f'Unknown gait type: {msg.data}')
             return
+
+        if self.robot_state == RobotState.AUTONOMOUS:
+            # Autonomous locomotion is constrained to SHUFFLE.
+            # STAND is still allowed for obstacle-hold and autonomous exit flow.
+            if gt not in (GaitType.SHUFFLE, GaitType.STAND):
+                self.get_logger().warn(
+                    f'Ignoring gait request {gt.name} in AUTONOMOUS; allowed: SHUFFLE/STAND.'
+                )
+                return
+
         self.walk_gait_type = gt
         if self.robot_state in (RobotState.WALKING, RobotState.AUTONOMOUS):
             self.gait.set_gait(gt)
@@ -141,7 +189,7 @@ class GaitNode(Node):
             self.gait.set_gait(GaitType.STAND)
             self._publish_gains(GaitType.STAND)
             self.vx = self.vy = self.yaw = 0.0
-        elif new_state in (RobotState.WALKING, RobotState.AUTONOMOUS):
+        elif new_state == RobotState.WALKING:
             self.gait.set_gait(self.walk_gait_type)
             self._publish_gains(self.walk_gait_type)
             # Capture current leg positions so we can blend smoothly into the
@@ -149,12 +197,26 @@ class GaitNode(Node):
             self._transition_from   = list(self._fb_angles)
             self._transition_start  = time.time()
             self._transition_active = True
-        elif new_state in (RobotState.SITTING, RobotState.ESTOP,
-                           RobotState.IDLE, RobotState.JUMPING,
-                           RobotState.BACKFLIP):
+        elif new_state == RobotState.AUTONOMOUS:
+            # Autonomous locomotion is fixed to shuffle for stability/safety.
+            self.walk_gait_type = GaitType.SHUFFLE
+            self.gait.set_gait(self.walk_gait_type)
+            self._publish_gains(self.walk_gait_type)
+            # Capture current leg positions so we can blend smoothly into the
+            # gait instead of jumping to phase=0 immediately.
+            self._transition_from   = list(self._fb_angles)
+            self._transition_start  = time.time()
+            self._transition_active = True
+        elif new_state in (RobotState.ESTOP, RobotState.IDLE,
+                           RobotState.JUMPING, RobotState.BACKFLIP):
             self.gait.set_gait(GaitType.STAND)
-            self._publish_gains(GaitType.STAND)
             self.vx = self.vy = self.yaw = 0.0
+            # Do NOT publish gains on ESTOP — state_manager is simultaneously
+            # zeroing KP/KD and sending can_enable=False.  Publishing high gains
+            # here races against that and can leave the motor drives holding
+            # position at high gain even after the Teensy is disconnected.
+            if new_state != RobotState.ESTOP:
+                self._publish_gains(GaitType.STAND)
 
     def _fb_callback(self, msg: Float32MultiArray):
         """Track latest motor-frame positions from the Teensy for transition blending."""
@@ -166,12 +228,12 @@ class GaitNode(Node):
         operator-set physical standing position.
 
         msg.data is motor-frame (JOINT_DIRECTION already applied by state_manager).
-        _NEUTRAL_MOTOR is also motor-frame, so the subtraction is frame-consistent.
+        self._neutral_motor is also motor-frame, so the subtraction is frame-consistent.
         """
         if len(msg.data) < _N_MOTORS:
             return
         self._home_offset = [
-            float(msg.data[i]) - _NEUTRAL_MOTOR[i]
+            float(msg.data[i]) - self._neutral_motor[i]
             for i in range(_N_MOTORS)
         ]
         self.get_logger().info(
@@ -185,11 +247,72 @@ class GaitNode(Node):
         msg.data = [kp, kd]
         self.gains_pub.publish(msg)
 
+    def _apply_shuffle_lift_trim(self, angles: list[float]) -> list[float]:
+        """Apply optional joint-space trim during SHUFFLE lift-up only.
+
+        User params are specified as IK-space lift trims (degrees):
+          - upper trim adjusts shoulder/upper-link angle
+          - lower trim adjusts knee/lower-link angle
+            Positive lower trim means MORE knee tuck during lift-up
+            (i.e. more knee bend in IK convention).
+
+        Conversion to motor frame respects left/right JOINT_DIRECTION and the
+        belt-coupled knee motor (knee motor tracks shoulder+knee in IK space).
+        """
+        if self.gait.gait_type != GaitType.SHUFFLE:
+            return angles
+
+        upper_trim_rad = math.radians(self._shuffle_lift_upper_trim_deg)
+        lower_trim_rad = math.radians(self._shuffle_lift_lower_trim_deg)
+        if abs(upper_trim_rad) < 1e-9 and abs(lower_trim_rad) < 1e-9:
+            return angles
+
+        out = list(angles)
+        lift_alpha = self.gait.shuffle_lift_alpha  # per-leg 0..1
+        any_clip = False
+        for leg in range(4):
+            a = lift_alpha[leg]
+            if a <= 1e-6:
+                continue
+
+            # Lower IK angle is negative when bent; make positive user trim
+            # mean "more tuck" by applying a negative IK delta.
+            d_upper = upper_trim_rad * a
+            d_lower = -lower_trim_rad * a
+
+            sho_idx = leg * 2
+            kne_idx = sho_idx + 1
+            dir_sho = JOINT_DIRECTION.get((leg, 1), 1)
+            dir_kne = JOINT_DIRECTION.get((leg, 2), 1)
+
+            # Shoulder motor follows shoulder IK directly.
+            out[sho_idx] += dir_sho * d_upper
+            # Knee motor follows (shoulder + knee) IK due belt coupling.
+            out[kne_idx] += dir_kne * (d_upper + d_lower)
+
+            sho_pre = out[sho_idx]
+            kne_pre = out[kne_idx]
+            out[sho_idx] = max(JOINT_ANGLE_MIN, min(JOINT_ANGLE_MAX, out[sho_idx]))
+            out[kne_idx] = max(JOINT_ANGLE_MIN, min(JOINT_ANGLE_MAX, out[kne_idx]))
+            if abs(out[sho_idx] - sho_pre) > 1e-9 or abs(out[kne_idx] - kne_pre) > 1e-9:
+                any_clip = True
+
+        if any_clip:
+            now = time.time()
+            if now - self._last_trim_clip_log_t > 1.0:
+                self._last_trim_clip_log_t = now
+                self.get_logger().warn(
+                    'Shuffle lift trim hit joint limits; reducing trim or '
+                    're-centering standing pose may improve effect.'
+                )
+
+        return out
+
     # ────────────────────────────────────────────────────────────────
     def _control_loop(self):
-        if self.robot_state in (RobotState.POSITIONING, RobotState.SITTING,
-                                RobotState.ESTOP, RobotState.IDLE,
-                                RobotState.JUMPING, RobotState.BACKFLIP):
+        if self.robot_state in (RobotState.POSITIONING, RobotState.ESTOP,
+                                RobotState.IDLE, RobotState.JUMPING,
+                                RobotState.BACKFLIP):
             return
 
         if self.robot_state == RobotState.STANDING:
@@ -218,6 +341,7 @@ class GaitNode(Node):
         # gait trajectories are centred on the real standing position, not the
         # hardcoded NEUTRAL_ANGLES.
         angles = [a + o for a, o in zip(angles, self._home_offset)]
+        angles = self._apply_shuffle_lift_trim(angles)
 
         # Blend from the pre-walk standing position into the live gait output.
         # This eliminates the jolt at gait start caused by phase_clock=0 and
